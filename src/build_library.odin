@@ -135,7 +135,7 @@ build_main :: proc() {
     defer delete(fb.data)
     
     total_sources := 0
-    entries, dir_err := os.read_dir(dir_handle, context.allocator)
+    entries, dir_err := os.read_dir(dir_handle)
     if dir_err != nil { os.close(dir_handle); return }
     for entry in entries {
         if entry.name[0] == '.' { continue }
@@ -158,7 +158,7 @@ build_main :: proc() {
     defer os.close(dir_handle2)
     
     processed := 0
-    entries2, dir_err2 := os.read_dir(dir_handle2, context.allocator)
+    entries2, dir_err2 := os.read_dir(dir_handle2)
     if dir_err2 != nil { os.close(dir_handle2); return }
     for entry in entries2 {
         if entry.name[0] == '.' { continue }

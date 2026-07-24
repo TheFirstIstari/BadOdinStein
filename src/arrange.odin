@@ -269,7 +269,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 
 	gh := (h + CELL_SIZE - 1) / CELL_SIZE
 	gw := (w + CELL_SIZE - 1) / CELL_SIZE
-	mem.clear(s.visited[:gh * gw])
+	clear(s.visited[:gh * gw])
 
 	feat_len := db.feat_len
 	max_cells := max_block / CELL_SIZE
@@ -282,7 +282,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 		s.specs = make([]TileSpec, spec_cap)
 	}
 
-	t0 := time.ticks()
+	t0 := time.tick()
 
 	for cy in 0 ..< gh {
 		y := cy * CELL_SIZE
@@ -386,7 +386,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 			feat_bufs := make([]u8, n_specs * feat_len)
 			defer delete(feat_bufs)
 
-			tf := time.ticks()
+			tf := time.tick()
 
 			for i in 0 ..< n_specs {
 				sp := s.specs[i]
@@ -396,18 +396,18 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 					for yy in 0 ..< sp.h {
 						src_off := (sp.y + yy) * color_stride + sp.x * 3
 						dst_off := yy * sp.w * 3
-						copy(my_crop[dst_off:], color_pixels[src_off:], sp.w * 3)
+						copy(my_crop[dst_off:], color_pixels[src_off:src_off + sp.w * 3])
 					}
 				} else {
 					for yy in 0 ..< sp.h {
 						src_off := (sp.y + yy) * w + sp.x
 						dst_off := yy * sp.w
-						copy(my_crop[dst_off:], gray[src_off:], sp.w)
+						copy(my_crop[dst_off:], gray[src_off:src_off + sp.w])
 					}
 				}
 
 				N := s.g_scales[0]
-				maxv := (1 << db.G) - 1
+				maxv := (1 << u32(db.G)) - 1
 				coarse_feat := make([]u8, N * N)
 				defer delete(coarse_feat)
 
@@ -439,7 +439,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 				ch := fnv1a_64(coarse_feat)
 				found, pid := cache_lookup(s.ccache, s.ccache_cap, ch)
 				if found {
-					s.coarse_hit[i] = pid
+					s.coarse_hit[i] = int(pid)
 					continue
 				}
 
@@ -457,7 +457,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 					manifest[midx].page_idx = reg.entries[s.coarse_hit[i]].page_idx
 				}
 			}
-			t.feat += f64(time.ticks() - tf) / f64(time.SECOND)
+			t.feat += f64(time.tick() - tf) / f64(time.Second)
 
 			if n_specs > s.miss_cap {
 				s.miss_idx = make([]int, n_specs)
@@ -482,7 +482,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 			}
 
 			if nt > 0 {
-				tm := time.ticks()
+				tm := time.tick()
 				if nt > s.result_cap {
 					s.results = make([]int, nt)
 					s.result_cap = nt
@@ -499,13 +499,13 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 					ch := fnv1a_64(feat[:coarse_len])
 					cache_put(&s.ccache, &s.ccache_cap, &s.ccache_n, ch, i32(pid))
 				}
-				t.match += f64(time.ticks() - tm) / f64(time.SECOND)
+				t.match += f64(time.tick() - tm) / f64(time.Second)
 				t.tiles += nt
 			}
 		}
 	}
 
-	t.solve += f64(time.ticks() - t0) / f64(time.SECOND)
+	t.solve += f64(time.tick() - t0) / f64(time.Second)
 	nout^ = n
 	ntiles^ = nt
 }
@@ -521,21 +521,23 @@ arrange_main :: proc() {
 	man_dir := cli_opt_str("manifests", "manifests_greedy")
 	max_frames := cli_opt_int("max-frames", 0)
 
-	if len(video_path) == 0 {
-		cli_die("arrange requires --video <file>")
-	}
-
     db: FeatureDB
     defer delete(db.data)
-    if load_features(feat_path, &db) != 0 {
-        cli_die("cannot load features: %s", feat_path)
-    }
 
     reg: Registry
     defer {
         for e in reg.entries { delete(e.pdf_path) }
         delete(reg.entries)
     }
+
+	if len(video_path) == 0 {
+		cli_die("arrange requires --video <file>")
+	}
+
+    if load_features(feat_path, &db) != 0 {
+        cli_die("cannot load features: %s", feat_path)
+    }
+
     if load_registry(reg_path, &reg) != 0 {
         cli_die("cannot load registry: %s", reg_path)
     }

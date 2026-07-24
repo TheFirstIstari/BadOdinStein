@@ -121,7 +121,7 @@ cli_info :: proc(msg: string, args: ..any) {
 	if g_cli.json_mode {
 		fmt.eprintf("[info] ")
 	} else {
-		"\033[1;36m[info]\033[0m ".eprint()
+		fmt.eprint("\033[1;36m[info]\033[0m ")
 	}
 	fmt.eprintf(msg, ..args)
 	fmt.eprintf("\n")
@@ -131,7 +131,7 @@ cli_warn :: proc(msg: string, args: ..any) {
 	if g_cli.json_mode {
 		fmt.eprintf("[warn] ")
 	} else {
-		"\033[1;33m[warn]\033[0m ".eprint()
+		fmt.eprint("\033[1;33m[warn]\033[0m ")
 	}
 	fmt.eprintf(msg, ..args)
 	fmt.eprintf("\n")
@@ -141,7 +141,7 @@ cli_error :: proc(msg: string, args: ..any) {
 	if g_cli.json_mode {
 		fmt.eprintf("[error] ")
 	} else {
-		"\033[1;31m[error]\033[0m ".eprint()
+		fmt.eprint("\033[1;31m[error]\033[0m ")
 	}
 	fmt.eprintf(msg, ..args)
 	fmt.eprintf("\n")
@@ -151,7 +151,7 @@ cli_die :: proc(msg: string, args: ..any) -> ! {
 	if g_cli.json_mode {
 		fmt.eprintf("[fatal] ")
 	} else {
-		"\033[1;31m[fatal]\033[0m ".eprint()
+		fmt.eprint("\033[1;31m[fatal]\033[0m ")
 	}
 	fmt.eprintf(msg, ..args)
 	fmt.eprintf("\n")
@@ -167,7 +167,7 @@ cli_progress_frame :: proc(label: string, frame, total_frames: int, fps, cache_h
 	if total_frames > 0 { pct = f64(frame) / f64(total_frames) * 100.0 }
 	if pct - g_last_progress < 1.0 && g_last_progress >= 0.0 { return }
 	g_last_progress = pct
-	"\r\033[K".eprint()
+	fmt.eprint("\r\033[K")
 	fmt.eprintfln("\033[1;32m[%s]\033[0m frame %d/%d (%.1f%%) | %.1f fps | cache %.1f%%",
 	              label, frame, total_frames, pct, fps, cache_hit_pct)
 	os.flush(os.stderr)
@@ -175,12 +175,12 @@ cli_progress_frame :: proc(label: string, frame, total_frames: int, fps, cache_h
 
 cli_progress_done :: proc(summary: string) {
 	if g_cli.quiet { return }
-	"\r\033[K".eprint()
+	fmt.eprint("\r\033[K")
 	fmt.eprintfln("\033[1;32m[done]\033[0m %s", summary)
 }
 
 cli_progress_stage :: proc(stage: string, percent: int) {
 	if g_cli.quiet || g_cli.json_mode { return }
-	"\r\033[K".eprint()
+	fmt.eprint("\r\033[K")
 	fmt.eprintfln("\033[1;34m[stage]\033[0m %s: %d%%", stage, percent)
 }

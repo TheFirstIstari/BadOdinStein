@@ -133,7 +133,7 @@ atlas_insert :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int, src_pixels: []u8, 
 }
 
 // ── Manifest loading ──
-load_manifest :: proc(path: string, out_insts: ^[^]Inst, out_n: ^int, target_w, target_h: int) -> int {
+load_manifest :: proc(path: string, out_insts: ^[]Inst, out_n: ^int, target_w, target_h: int) -> int {
     data, err := os.read_entire_file_from_path(path, context.allocator)
     if err != nil { return -1 }
     defer delete(data)
@@ -147,7 +147,7 @@ load_manifest :: proc(path: string, out_insts: ^[^]Inst, out_n: ^int, target_w, 
     
     // Compute scale
     scale: f64 = 1.0
-    ox, oy: f64 = 0.0
+    ox, oy: f64 = 0, 0
     if src_w > 0 && src_h > 0 && (src_w != target_w || src_h != target_h) {
         sx := f64(target_w) / f64(src_w)
         sy := f64(target_h) / f64(src_h)
@@ -229,7 +229,7 @@ render_main :: proc() {
     manifest_paths: [dynamic]string
     defer delete(manifest_paths)
     
-    entries, dir_err := os.read_dir(dir_handle, context.allocator)
+    entries, dir_err := os.read_dir(dir_handle)
     if dir_err != nil { os.close(dir_handle); return }
     
     for entry in entries {
@@ -249,7 +249,7 @@ render_main :: proc() {
     
     // Auto-detect dimensions from first manifest
     if width <= 0 && height <= 0 {
-        tmp_insts: ^Inst
+        tmp_insts: []Inst = nil
         tmp_n: int
         if load_manifest(manifest_paths[0], &tmp_insts, &tmp_n, 99999, 99999) == 0 {
             // Read src_w/src_h from raw file instead
@@ -282,7 +282,7 @@ render_main :: proc() {
     cli_info("render: %d frames %dx%d %s %.1f fps -> %s", len(manifest_paths), width, height, mode_str, fps_val, output)
     
     // Pre-load all manifests
-    loaded_insts := make([]^Inst, len(manifest_paths))
+    loaded_insts := make([][]Inst, len(manifest_paths))
     loaded_n := make([]int, len(manifest_paths))
     defer {
         for i in 0 ..< len(manifest_paths) {
@@ -318,10 +318,10 @@ render_main :: proc() {
     if max_frames > 0 && max_frames < max_frames_actual { max_frames_actual = max_frames }
     
     frames_done := 0
-    start := time.ticks()
+    start := time.tick()
     
     for fi in 0 ..< max_frames_actual {
-        mem.clear(canvas)
+        clear(canvas)
         
         n := loaded_n[fi]
         insts := loaded_insts[fi]
@@ -350,7 +350,7 @@ render_main :: proc() {
                                     canvas[off+2] = val
                                 }
                             } else {
-                                mem.clear(canvas[dst_y * width + fill_x:])
+                                clear(canvas[dst_y * width + fill_x:])
                                 canvas[dst_y * width + fill_x] = val
                                 // Actually need fill_w bytes
                                 for px in 0 ..< fill_w { canvas[dst_y * width + fill_x + px] = val }
@@ -443,7 +443,7 @@ render_main :: proc() {
         
         frames_done += 1
         if !g_cli.quiet && frames_done % 30 == 0 {
-            elapsed := f64(time.ticks() - start) / f64(time.SECOND)
+            elapsed := f64(time.tick() - start) / f64(time.Second)
             fps_out := f64(frames_done) / max(elapsed, 0.001)
             cache_pct := 0.0
             if atlas.hits + atlas.misses > 0 {
@@ -456,7 +456,7 @@ render_main :: proc() {
     // TODO: Encode canvas frames to output video via video_encoder_open/write/close
     cli_info("rendered %d frames (encode not yet wired)", frames_done)
     
-    elapsed := f64(time.ticks() - start) / f64(time.SECOND)
+    elapsed := f64(time.tick() - start) / f64(time.Second)
     fps_out := f64(frames_done) / max(elapsed, 0.001)
     cli_progress_done(fmt.tprintf("render complete in %.2fs | %.2f fps | %d frames", elapsed, fps_out, frames_done))
 }
