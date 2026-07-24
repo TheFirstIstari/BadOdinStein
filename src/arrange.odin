@@ -366,144 +366,145 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 		}
 	}
 
-	if n_specs == 0 { goto done }
+	match_block: {
+		if n_specs > 0 {
+			coarse_len := s.g_scales[0] * s.g_scales[0]
 
-	coarse_len := s.g_scales[0] * s.g_scales[0]
-
-	if n_specs > s.coarse_cap {
-		s.coarse_hit = make([]int, n_specs)
-		s.coarse_cap = n_specs
-	}
-	for i in 0 ..< n_specs { s.coarse_hit[i] = -1 }
-
-	ch_mult: int = 3 if db.channels == 3 else 1
-	crop_sz := max_block * max_block * ch_mult
-	if crop_sz > s.crop_cap {
-		s.crop_bufs = make([]u8, crop_sz)
-		s.crop_cap = crop_sz
-	}
-
-	feat_bufs := make([]u8, n_specs * feat_len)
-	defer delete(feat_bufs)
-
-	tf := time.ticks()
-
-	for i in 0 ..< n_specs {
-		sp := s.specs[i]
-		my_crop := s.crop_bufs[:sp.w * sp.h * ch_mult]
-
-		if db.channels == 3 {
-			for yy in 0 ..< sp.h {
-				src_off := (sp.y + yy) * color_stride + sp.x * 3
-				dst_off := yy * sp.w * 3
-				copy(my_crop[dst_off:], color_pixels[src_off:], sp.w * 3)
+			if n_specs > s.coarse_cap {
+				s.coarse_hit = make([]int, n_specs)
+				s.coarse_cap = n_specs
 			}
-		} else {
-			for yy in 0 ..< sp.h {
-				src_off := (sp.y + yy) * w + sp.x
-				dst_off := yy * sp.w
-				copy(my_crop[dst_off:], gray[src_off:], sp.w)
+			for i in 0 ..< n_specs { s.coarse_hit[i] = -1 }
+
+			ch_mult: int = 3 if db.channels == 3 else 1
+			crop_sz := max_block * max_block * ch_mult
+			if crop_sz > s.crop_cap {
+				s.crop_bufs = make([]u8, crop_sz)
+				s.crop_cap = crop_sz
 			}
-		}
 
-		N := s.g_scales[0]
-		maxv := (1 << db.G) - 1
-		coarse_feat := make([]u8, N * N)
-		defer delete(coarse_feat)
+			feat_bufs := make([]u8, n_specs * feat_len)
+			defer delete(feat_bufs)
 
-		for dy in 0 ..< N {
-			sy0 := dy * sp.h / N
-			sy1 := min((dy + 1) * sp.h / N, sp.h)
-			for dx in 0 ..< N {
-				sx0 := dx * sp.w / N
-				sx1 := min((dx + 1) * sp.w / N, sp.w)
-				psum: u64 = 0
-				for sy in sy0 ..< sy1 {
-					for sx in sx0 ..< sx1 {
-						if db.channels == 3 {
-							poff := sy * sp.w * 3 + sx * 3
-							psum += u64((29 * u32(my_crop[poff+0]) + 150 * u32(my_crop[poff+1]) + 77 * u32(my_crop[poff+2])) >> 8)
-						} else {
-							psum += u64(my_crop[sy * sp.w + sx])
-						}
+			tf := time.ticks()
+
+			for i in 0 ..< n_specs {
+				sp := s.specs[i]
+				my_crop := s.crop_bufs[:sp.w * sp.h * ch_mult]
+
+				if db.channels == 3 {
+					for yy in 0 ..< sp.h {
+						src_off := (sp.y + yy) * color_stride + sp.x * 3
+						dst_off := yy * sp.w * 3
+						copy(my_crop[dst_off:], color_pixels[src_off:], sp.w * 3)
+					}
+				} else {
+					for yy in 0 ..< sp.h {
+						src_off := (sp.y + yy) * w + sp.x
+						dst_off := yy * sp.w
+						copy(my_crop[dst_off:], gray[src_off:], sp.w)
 					}
 				}
-				area := (sy1 - sy0) * (sx1 - sx0)
-				v := int(psum / u64(area)) if area > 0 else 0
-				q := v if db.G >= 8 else (v * maxv + 127) / 255
-				if q > maxv { q = maxv }
-				coarse_feat[dy * N + dx] = u8(q)
+
+				N := s.g_scales[0]
+				maxv := (1 << db.G) - 1
+				coarse_feat := make([]u8, N * N)
+				defer delete(coarse_feat)
+
+				for dy in 0 ..< N {
+					sy0 := dy * sp.h / N
+					sy1 := min((dy + 1) * sp.h / N, sp.h)
+					for dx in 0 ..< N {
+						sx0 := dx * sp.w / N
+						sx1 := min((dx + 1) * sp.w / N, sp.w)
+						psum: u64 = 0
+						for sy in sy0 ..< sy1 {
+							for sx in sx0 ..< sx1 {
+								if db.channels == 3 {
+									poff := sy * sp.w * 3 + sx * 3
+									psum += u64((29 * u32(my_crop[poff+0]) + 150 * u32(my_crop[poff+1]) + 77 * u32(my_crop[poff+2])) >> 8)
+								} else {
+									psum += u64(my_crop[sy * sp.w + sx])
+								}
+							}
+						}
+						area := (sy1 - sy0) * (sx1 - sx0)
+						v := int(psum / u64(area)) if area > 0 else 0
+						q := v if db.G >= 8 else (v * maxv + 127) / 255
+						if q > maxv { q = maxv }
+						coarse_feat[dy * N + dx] = u8(q)
+					}
+				}
+
+				ch := fnv1a_64(coarse_feat)
+				found, pid := cache_lookup(s.ccache, s.ccache_cap, ch)
+				if found {
+					s.coarse_hit[i] = pid
+					continue
+				}
+
+				crop_img := Img{w = sp.w, h = sp.h, stride = sp.w * db.channels, pixels = my_crop, channels = db.channels}
+				out_slice := feat_bufs[i * feat_len :]
+				feature_ch: int = 1 if db.channels == 3 else 0
+				img_compute_feature_multires(&crop_img, s.g_scales[:s.g_n_scales], db.G, db.has_edges, feature_ch, out_slice)
+			}
+
+			for i in 0 ..< n_specs {
+				if s.coarse_hit[i] >= 0 {
+					t.hits += 1
+					midx := s.specs[i].manifest_idx
+					manifest[midx].op_id = i32(s.coarse_hit[i])
+					manifest[midx].page_idx = reg.entries[s.coarse_hit[i]].page_idx
+				}
+			}
+			t.feat += f64(time.ticks() - tf) / f64(time.SECOND)
+
+			if n_specs > s.miss_cap {
+				s.miss_idx = make([]int, n_specs)
+				s.miss_cap = n_specs
+			}
+			nt = 0
+			for i in 0 ..< n_specs {
+				if s.coarse_hit[i] >= 0 { continue }
+				feat := feat_bufs[i * feat_len :]
+				h := full_feat_hash(feat, feat_len)
+				found, pid := cache_lookup(s.fcache, s.fcache_cap, h)
+				if found {
+					t.hits += 1
+					midx := s.specs[i].manifest_idx
+					manifest[midx].op_id = pid
+					manifest[midx].page_idx = reg.entries[pid].page_idx
+				} else {
+					s.miss_idx[nt] = i
+					copy(tiles[nt * feat_len:], feat[:feat_len])
+					nt += 1
+				}
+			}
+
+			if nt > 0 {
+				tm := time.ticks()
+				if nt > s.result_cap {
+					s.results = make([]int, nt)
+					s.result_cap = nt
+				}
+				match_batch_coarse(db.data, tiles[:nt * feat_len], db.n_pages, nt, feat_len, coarse_len, s.results[:nt])
+				for i in 0 ..< nt {
+					pid := s.results[i]
+					midx := s.specs[s.miss_idx[i]].manifest_idx
+					manifest[midx].op_id = i32(pid)
+					manifest[midx].page_idx = reg.entries[pid].page_idx
+					feat := tiles[i * feat_len :]
+					fh := full_feat_hash(feat, feat_len)
+					cache_put(&s.fcache, &s.fcache_cap, &s.fcache_n, fh, i32(pid))
+					ch := fnv1a_64(feat[:coarse_len])
+					cache_put(&s.ccache, &s.ccache_cap, &s.ccache_n, ch, i32(pid))
+				}
+				t.match += f64(time.ticks() - tm) / f64(time.SECOND)
+				t.tiles += nt
 			}
 		}
-
-		ch := fnv1a_64(coarse_feat)
-		found, pid := cache_lookup(s.ccache, s.ccache_cap, ch)
-		if found {
-			s.coarse_hit[i] = pid
-			continue
-		}
-
-		crop_img := Img{w = sp.w, h = sp.h, stride = sp.w * db.channels, pixels = my_crop, channels = db.channels}
-		out_slice := feat_bufs[i * feat_len :]
-		feature_ch: int = 1 if db.channels == 3 else 0
-		img_compute_feature_multires(&crop_img, s.g_scales[:s.g_n_scales], db.G, db.has_edges, feature_ch, out_slice)
 	}
 
-	for i in 0 ..< n_specs {
-		if s.coarse_hit[i] >= 0 {
-			t.hits += 1
-			midx := s.specs[i].manifest_idx
-			manifest[midx].op_id = i32(s.coarse_hit[i])
-			manifest[midx].page_idx = reg.entries[s.coarse_hit[i]].page_idx
-		}
-	}
-	t.feat += f64(time.ticks() - tf) / f64(time.SECOND)
-
-	if n_specs > s.miss_cap {
-		s.miss_idx = make([]int, n_specs)
-		s.miss_cap = n_specs
-	}
-	nt = 0
-	for i in 0 ..< n_specs {
-		if s.coarse_hit[i] >= 0 { continue }
-		feat := feat_bufs[i * feat_len :]
-		h := full_feat_hash(feat, feat_len)
-		found, pid := cache_lookup(s.fcache, s.fcache_cap, h)
-		if found {
-			t.hits += 1
-			midx := s.specs[i].manifest_idx
-			manifest[midx].op_id = pid
-			manifest[midx].page_idx = reg.entries[pid].page_idx
-		} else {
-			s.miss_idx[nt] = i
-			copy(tiles[nt * feat_len:], feat[:feat_len])
-			nt += 1
-		}
-	}
-
-	if nt > 0 {
-		tm := time.ticks()
-		if nt > s.result_cap {
-			s.results = make([]int, nt)
-			s.result_cap = nt
-		}
-		match_batch_coarse(db.data, tiles[:nt * feat_len], db.n_pages, nt, feat_len, coarse_len, s.results[:nt])
-		for i in 0 ..< nt {
-			pid := s.results[i]
-			midx := s.specs[s.miss_idx[i]].manifest_idx
-			manifest[midx].op_id = i32(pid)
-			manifest[midx].page_idx = reg.entries[pid].page_idx
-			feat := tiles[i * feat_len :]
-			fh := full_feat_hash(feat, feat_len)
-			cache_put(&s.fcache, &s.fcache_cap, &s.fcache_n, fh, i32(pid))
-			ch := fnv1a_64(feat[:coarse_len])
-			cache_put(&s.ccache, &s.ccache_cap, &s.ccache_n, ch, i32(pid))
-		}
-		t.match += f64(time.ticks() - tm) / f64(time.SECOND)
-		t.tiles += nt
-	}
-
-done:
 	t.solve += f64(time.ticks() - t0) / f64(time.SECOND)
 	nout^ = n
 	ntiles^ = nt
