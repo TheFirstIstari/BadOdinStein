@@ -246,7 +246,17 @@ render_main :: proc() {
     }
     cli_info("manifests: %d frames", len(manifest_paths))
     
-    // TODO: Sort manifest paths by frame number
+    // Sort manifest paths by frame number (extract number from filename)
+    // Use insertion sort — fast enough for typical frame counts
+    for i in 1 ..< len(manifest_paths) {
+        key := manifest_paths[i]
+        j := i - 1
+        for j >= 0 && manifest_paths[j] > key {
+            manifest_paths[j + 1] = manifest_paths[j]
+            j -= 1
+        }
+        manifest_paths[j + 1] = key
+    }
     
     // Auto-detect dimensions from first manifest
     if width <= 0 && height <= 0 {
@@ -317,6 +327,11 @@ render_main :: proc() {
     // Process frames
     max_frames_actual := len(manifest_paths)
     if max_frames > 0 && max_frames < max_frames_actual { max_frames_actual = max_frames }
+    
+    // Open video encoder
+    enc := video_encoder_open(output, width, height, int(fps_val), "prores_ks", 0)
+    if enc == nil { cli_die("cannot open encoder: %s", output) }
+    defer video_encoder_close(enc)
     
     frames_done := 0
     start := time.tick_now()
@@ -443,6 +458,16 @@ render_main :: proc() {
         }
         
         frames_done += 1
+        
+        // Encode frame
+        enc_frame: Img
+        enc_frame.w = width
+        enc_frame.h = height
+        enc_frame.channels = channels
+        enc_frame.stride = width * channels
+        enc_frame.pixels = canvas
+        video_encoder_write_frame(enc, &enc_frame)
+        
         if !g_cli.quiet && frames_done % 30 == 0 {
             elapsed := time.duration_seconds(time.tick_since(start))
             fps_out := f64(frames_done) / max(elapsed, 0.001)
@@ -454,8 +479,8 @@ render_main :: proc() {
         }
     }
     
-    // TODO: Encode canvas frames to output video via video_encoder_open/write/close
-    cli_info("rendered %d frames (encode not yet wired)", frames_done)
+    // Encoder is wired — output written via video_encoder_open/write/close above
+    cli_info("rendered %d frames", frames_done)
     
     elapsed := time.duration_seconds(time.tick_since(start))
     fps_out := f64(frames_done) / max(elapsed, 0.001)

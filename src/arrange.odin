@@ -520,27 +520,20 @@ arrange_main :: proc() {
 	reg_path := cli_opt_str("registry", "registry.bin")
 	man_dir := cli_opt_str("manifests", "manifests_greedy")
 	max_frames := cli_opt_int("max-frames", 0)
+	if cli_has("max-block-pct") { state.g_max_block_pct = cli_opt_f64("max-block-pct", 0.5) }
+	if cli_has("hero-min-pct") { state.g_hero_min_pct = cli_opt_f64("hero-min-pct", 0.0625) }
 
-    db: FeatureDB
-    defer delete(db.data)
-
-    reg: Registry
-    defer {
-        for e in reg.entries { delete(e.pdf_path) }
-        delete(reg.entries)
-    }
-
-	if len(video_path) == 0 {
-		cli_die("arrange requires --video <file>")
+	db: FeatureDB
+	defer delete(db.data)
+	reg: Registry
+	defer {
+		for e in reg.entries { delete(e.pdf_path) }
+		delete(reg.entries)
 	}
 
-    if load_features(feat_path, &db) != 0 {
-        cli_die("cannot load features: %s", feat_path)
-    }
-
-    if load_registry(reg_path, &reg) != 0 {
-        cli_die("cannot load registry: %s", reg_path)
-    }
+	if len(video_path) == 0 { cli_die("arrange requires --video <file>") }
+	if load_features(feat_path, &db) != 0 { cli_die("cannot load features: %s", feat_path) }
+	if load_registry(reg_path, &reg) != 0 { cli_die("cannot load registry: %s", reg_path) }
 
 	state.g_G = db.G
 	state.g_feat_len = db.feat_len
@@ -551,5 +544,113 @@ arrange_main :: proc() {
 	cli_info("library: %d pages | scales=%d G=%d edges=%d | feat_len=%d",
 	         db.n_pages, state.g_n_scales, state.g_G, state.g_has_edges, db.feat_len)
 
-	cli_warn("video decode not yet implemented - use --video after video.odin is complete")
+	dec := video_decoder_open(video_path)
+	if dec == nil { cli_die("cannot open video: %s", video_path) }
+	defer video_decoder_close(dec)
+
+	fw, fh := dec.width, dec.height
+	source_fps := dec.fps
+	cli_info("video: %dx%d | fps=%.1f", fw, fh, source_fps)
+
+	hero_feat_len := state.g_scales[0] * state.g_scales[0]
+	pid_white, pid_black: int
+	mx, mn: f64 = -1, 256
+	for i in 0 ..< db.n_pages {
+		s: f64 = 0
+		f := db.data[i * db.feat_len:]
+		for j in 0 ..< hero_feat_len { s += f64(f[j]) }
+		m := s / f64(hero_feat_len)
+		if m > mx { mx = m; pid_white = i }
+		if m < mn { mn = m; pid_black = i }
+	}
+
+	max_block := int(f64(fw) * state.g_max_block_pct)
+	max_block = (max_block / 8) * 8
+	if max_block < 8 { max_block = 8 }
+	hero_min := int(f64(fh) * state.g_hero_min_pct)
+
+	os.make_directory(man_dir)
+
+	fps_path := fmt.tprintf("%s/fps.bin", man_dir)
+	fps_data := make([]u8, 8)
+	(^f64)(&fps_data[0])^ = source_fps
+	_ = os.write_entire_file(fps_path, fps_data)
+	delete(fps_data)
+
+	t: Timings
+	frames_done, total_tiles: int
+	start := time.tick_now()
+
+	frame: Img
+	defer img_free(&frame)
+	gray: Img
+	defer img_free(&gray)
+
+	manifest_cap := max(512, ((fw + 7) / 8) * ((fh + 7) / 8) + 1)
+	manifest := make([]Inst, manifest_cap)
+	defer delete(manifest)
+	tiles := make([]u8, db.feat_len * manifest_cap)
+	defer delete(tiles)
+
+	fi: int
+	for video_decoder_read_frame(dec, &frame) {
+		if max_frames > 0 && fi >= max_frames { break }
+
+		gray_sz := fw * fh
+		if gray.pixels == nil || len(gray.pixels) != gray_sz {
+			img_free(&gray)
+			gray.pixels = make([]u8, gray_sz)
+			gray.w = fw
+			gray.h = fh
+			gray.stride = fw
+			gray.channels = 1
+			if frame.channels == 1 {
+				copy(gray.pixels, frame.pixels[:gray_sz])
+			} else {
+				img_to_gray(&frame, &gray)
+			}
+		} else if frame.channels == 1 {
+			copy(gray.pixels, frame.pixels[:gray_sz])
+		} else {
+			img_to_gray(&frame, &gray)
+		}
+
+		needed_cap := ((fw + 7) / 8) * ((fh + 7) / 8) + 1
+		if needed_cap > manifest_cap {
+			new_cap := needed_cap * 2
+			new_manifest := make([]Inst, new_cap)
+			copy(new_manifest, manifest[:manifest_cap])
+			delete(manifest)
+			manifest = new_manifest
+			new_tiles := make([]u8, db.feat_len * new_cap)
+			delete(tiles)
+			tiles = new_tiles
+			manifest_cap = new_cap
+		}
+
+		n: int
+		nt: int
+		solve_full(&state, gray.pixels, frame.pixels, frame.stride, frame.channels, fw, fh,
+		           &db, &reg, pid_white, pid_black, max_block, hero_min,
+		           manifest[:manifest_cap], &n, tiles[:db.feat_len * manifest_cap], &nt, &t)
+
+		for k in 0 ..< n { if manifest[k].op_id >= 0 { total_tiles += 1 } }
+
+		man_file := fmt.tprintf("%s/%04d.bin", man_dir, fi)
+		write_manifest(man_file, fw, fh, manifest[:n], n)
+
+		frames_done += 1
+		fi += 1
+		if !g_cli.quiet && frames_done % 30 == 0 {
+			elapsed := time.duration_seconds(time.tick_since(start))
+			fps_out := f64(frames_done) / max(elapsed, 0.001)
+			cli_progress_frame("arrange", fi, max_frames if max_frames > 0 else int(source_fps * 300),
+			                   fps_out, 0.0)
+		}
+	}
+
+	elapsed := time.duration_seconds(time.tick_since(start))
+	overall_fps := f64(frames_done) / max(elapsed, 0.001)
+	cli_progress_done(fmt.tprintf("arrange complete in %.2fs | %.2f fps | %d tiles",
+	                              elapsed, overall_fps, total_tiles))
 }
