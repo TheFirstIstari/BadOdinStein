@@ -100,12 +100,12 @@ cli_parse :: proc(args: []string) {
 		case strings.has_prefix(arg, "--"):
 			eq := strings.index(arg, "=")
 			if eq >= 0 {
-				cli_store(strings.substring(arg, 2, eq), strings.substring(arg, eq + 1, len(arg)))
+				cli_store(arg[2:eq], arg[eq + 1:])
 			} else if i + 1 < len(args) && len(args[i+1]) > 0 && args[i+1][0] != '-' {
 				i += 1
-				cli_store(strings.substring(arg, 2, len(arg)), args[i])
+				cli_store(arg[2:], args[i])
 			} else {
-				cli_store(strings.substring(arg, 2, len(arg)), "1")
+				cli_store(arg[2:], "1")
 			}
 		case len(arg) > 1 && arg[0] == '-' && arg[1] != '-':
 			flag := arg[1:2]

@@ -551,5 +551,5 @@ arrange_main :: proc() {
 	cli_info("library: %d pages | scales=%d G=%d edges=%d | feat_len=%d",
 	         db.n_pages, state.g_n_scales, state.g_G, state.g_has_edges, db.feat_len)
 
-	cli_die("video decode not yet implemented - use --video after video.odin is complete")
+	cli_warn("video decode not yet implemented - use --video after video.odin is complete")
 }
