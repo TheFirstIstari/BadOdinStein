@@ -18,7 +18,7 @@ Cache_Slot :: struct {
 fnv1a_64 :: proc(data: []u8) -> u64 {
 	h: u64 = 14695981039346656037
 	for b in data {
-		h ^= u64(b)
+		h ~= u64(b)
 		h *= 1099511628211
 	}
 	return h | 1
@@ -29,7 +29,7 @@ full_feat_hash :: proc(feat: []u8, feat_len: int) -> u64 {
 	n := min(feat_len, 64)
 	step := max(feat_len / n, 1)
 	for i in 0 ..< n {
-		h ^= u64(feat[i * step])
+		h ~= u64(feat[i * step])
 		h *= 1099511628211
 	}
 	return h | 1
@@ -123,17 +123,17 @@ arrange_cleanup :: proc(s: ^Arrange_State) {
 }
 
 load_features :: proc(path: string, db: ^FeatureDB) -> int {
-	data, ok := os.read_entire_file_from_path(path)
-	if !ok { return -1 }
+	data, err := os.read_entire_file_from_path(path, context.allocator)
+	if err != nil { return -1 }
 	defer delete(data)
 
 	if len(data) < 24 { return -1 }
 	buf := data
 
-	n := *(*u32)(&buf[0])
-	feat_len := *(*u32)(&buf[4])
-	G := *(*u32)(&buf[8])
-	n_scales := *(*u32)(&buf[12])
+	n := (^u32)(&buf[0])^
+	feat_len := (^u32)(&buf[4])^
+	G := (^u32)(&buf[8])^
+	n_scales := (^u32)(&buf[12])^
 
 	if G == 0 || G > 8 || n_scales == 0 || n_scales > 16 { return -1 }
 
@@ -141,12 +141,12 @@ load_features :: proc(path: string, db: ^FeatureDB) -> int {
 	if len(data) < header_len { return -1 }
 
 	for i in 0 ..< int(n_scales) {
-		s := *(*u32)(&buf[16 + i * 4])
+		s := (^u32)(&buf[16 + i * 4])^
 		if s == 0 || s > 256 { return -1 }
 		db.scales[i] = int(s)
 	}
 
-	has_edges := *(*u32)(&buf[16 + int(n_scales) * 4])
+	has_edges := (^u32)(&buf[16 + int(n_scales) * 4])^
 
 	gray_feat_len: u64 = 0
 	for i in 0 ..< int(n_scales) {
@@ -163,7 +163,7 @@ load_features :: proc(path: string, db: ^FeatureDB) -> int {
 	} else if u64(feat_len) == expected_color {
 		detected_channels = 3
 		if len(data) >= header_len + 4 {
-			ch := *(*u32)(&buf[header_len])
+			ch := (^u32)(&buf[header_len])^
 			if ch == 3 { header_len += 4 }
 		}
 	} else {
@@ -189,21 +189,21 @@ load_features :: proc(path: string, db: ^FeatureDB) -> int {
 }
 
 load_registry :: proc(path: string, reg: ^Registry) -> int {
-	data, ok := os.read_entire_file_from_path(path)
-	if !ok { return -1 }
+	data, err := os.read_entire_file_from_path(path, context.allocator)
+	if err != nil { return -1 }
 	defer delete(data)
 
 	if len(data) < 4 { return -1 }
 	buf := data
-	n := *(*u32)(&buf[0])
+	n := (^u32)(&buf[0])^
 	if u32(n) > u32(len(data)) / 5 { return -1 }
 
 	off := 4
 	for i in 0 ..< int(n) {
 		if off + 8 > len(data) { return -1 }
-		page_idx := *(*i32)(&buf[off])
+		page_idx := (^i32)(&buf[off])^
 		off += 4
-		plen := *(*u32)(&buf[off])
+		plen := (^u32)(&buf[off])^
 		off += 4
 		if page_idx < 0 { return -1 }
 		if off + int(plen) > len(data) { return -1 }
@@ -222,23 +222,23 @@ write_manifest :: proc(path: string, fw, fh: int, manifest: []Inst, n: int) {
 	mbuf := make([]u8, total)
 	defer delete(mbuf)
 
-	*(*u32)(&mbuf[0]) = u32(fw)
-	*(*u32)(&mbuf[4]) = u32(fh)
-	*(*u32)(&mbuf[8]) = u32(n)
+	(^u32)(&mbuf[0])^ = u32(fw)
+	(^u32)(&mbuf[4])^ = u32(fh)
+	(^u32)(&mbuf[8])^ = u32(n)
 
 	rp := 12
 	for k in 0 ..< n {
-		*(*i32)(&mbuf[rp + 0])  = manifest[k].x
-		*(*i32)(&mbuf[rp + 4])  = manifest[k].y
-		*(*i32)(&mbuf[rp + 8])  = manifest[k].w
-		*(*i32)(&mbuf[rp + 12]) = manifest[k].h
-		*(*i32)(&mbuf[rp + 16]) = manifest[k].op_id
-		*(*i32)(&mbuf[rp + 20]) = manifest[k].page_idx
+		(^i32)(&mbuf[rp + 0])^  = manifest[k].x
+		(^i32)(&mbuf[rp + 4])^  = manifest[k].y
+		(^i32)(&mbuf[rp + 8])^  = manifest[k].w
+		(^i32)(&mbuf[rp + 12])^ = manifest[k].h
+		(^i32)(&mbuf[rp + 16])^ = manifest[k].op_id
+		(^i32)(&mbuf[rp + 20])^ = manifest[k].page_idx
 		rp += 24
 	}
 
-	f, ok := os.create(path)
-	if !ok { return }
+	f, ferr := os.create(path)
+	if ferr != os.ERROR_NONE { return }
 	defer os.close(f)
 	os.write(f, mbuf)
 }

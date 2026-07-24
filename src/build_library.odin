@@ -32,45 +32,45 @@ feat_push :: proc(fb: ^Feat_Buf, feat: []u8) {
 }
 
 write_features :: proc(path: string, fb: ^Feat_Buf, nreg, feat_len, G, n_scales: int, scales: []int, has_edges, channels: int) {
-    f, ok := os.create(path)
-    if !ok { return }
+    f, ferr := os.create(path)
+    if ferr != os.ERROR_NONE { return }
     defer os.close(f)
     
     buf := make([]u8, 16 + n_scales * 4 + 4 + 4)
     defer delete(buf)
     
-    *(*u32)(&buf[0]) = u32(nreg)
-    *(*u32)(&buf[4]) = u32(feat_len)
-    *(*u32)(&buf[8]) = u32(G)
-    *(*u32)(&buf[12]) = u32(n_scales)
+    (^u32)(&buf[0])^ = u32(nreg)
+    (^u32)(&buf[4])^ = u32(feat_len)
+    (^u32)(&buf[8])^ = u32(G)
+    (^u32)(&buf[12])^ = u32(n_scales)
     off := 16
     for i in 0 ..< n_scales {
-        *(*u32)(&buf[off]) = u32(scales[i])
+        (^u32)(&buf[off])^ = u32(scales[i])
         off += 4
     }
-    *(*u32)(&buf[off]) = u32(has_edges)
+    (^u32)(&buf[off])^ = u32(has_edges)
     off += 4
-    *(*u32)(&buf[off]) = u32(channels)
+    (^u32)(&buf[off])^ = u32(channels)
     
     os.write(f, buf)
     os.write(f, fb.data)
 }
 
 write_registry :: proc(path: string, paths: []string, page_idxs: []int, nreg: int) {
-    f, ok := os.create(path)
-    if !ok { return }
+    f, ferr := os.create(path)
+    if ferr != os.ERROR_NONE { return }
     defer os.close(f)
     
     header := make([]u8, 4)
     defer delete(header)
-    *(*u32)(&header[0]) = u32(nreg)
+    (^u32)(&header[0])^ = u32(nreg)
     os.write(f, header)
     
     for i in 0 ..< nreg {
         entry_buf := make([]u8, 8 + len(paths[i]))
         defer delete(entry_buf)
-        *(*i32)(&entry_buf[0]) = i32(page_idxs[i])
-        *(*u32)(&entry_buf[4]) = u32(len(paths[i]))
+        (^i32)(&entry_buf[0])^ = i32(page_idxs[i])
+        (^u32)(&entry_buf[4])^ = u32(len(paths[i]))
         copy(entry_buf[8:], paths[i])
         os.write(f, entry_buf)
     }
@@ -135,7 +135,9 @@ build_main :: proc() {
     defer delete(fb.data)
     
     total_sources := 0
-    for entry in os.read_dir(dir_handle) {
+    entries, dir_err := os.read_dir(dir_handle)
+    if dir_err != nil { os.close(dir_handle); return }
+    for entry in entries {
         if entry.name[0] == '.' { continue }
         full := fmt.tprintf("%s/%s", src, entry.name)
         if is_pdf_file(full) || is_img_file(full) {
@@ -156,7 +158,9 @@ build_main :: proc() {
     defer os.close(dir_handle2)
     
     processed := 0
-    for entry in os.read_dir(dir_handle2) {
+    entries2, dir_err2 := os.read_dir(dir_handle2)
+    if dir_err2 != nil { os.close(dir_handle2); return }
+    for entry in entries2 {
         if entry.name[0] == '.' { continue }
         full := fmt.tprintf("%s/%s", src, entry.name)
         

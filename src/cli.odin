@@ -25,7 +25,7 @@ g_nopts: int
 
 cli_store :: proc(name, value: string) {
 	for i in 0 ..< g_nopts {
-		if strings.equal(cast(string)g_opts[i].name[:], name) {
+		if string(g_opts[i].name[:]) == name {
 			copy(g_opts[i].value[:], value)
 			return
 		}
@@ -39,7 +39,7 @@ cli_store :: proc(name, value: string) {
 
 cli_get :: proc(name, def: string) -> string {
 	for i in 0 ..< g_nopts {
-		if strings.equal(cast(string)g_opts[i].name[:], name) {
+		if string(g_opts[i].name[:]) == name {
 			return strings.clone(cast(string)g_opts[i].value[:])
 		}
 	}
@@ -70,7 +70,7 @@ cli_opt_f64 :: proc(name: string, def: f64) -> f64 {
 
 cli_has :: proc(name: string) -> bool {
 	for i in 0 ..< g_nopts {
-		if strings.equal(cast(string)g_opts[i].name[:], name) {
+		if string(g_opts[i].name[:]) == name {
 			return true
 		}
 	}

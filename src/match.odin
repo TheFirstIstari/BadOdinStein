@@ -46,9 +46,7 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 	}
 
 	fine_needed := coarse_len < feat_len
-	if !fine_needed {
-		coarse_len = feat_len
-	}
+	coarse_len := feat_len if !fine_needed else coarse_len
 
 	K := min(MATCH_K, n_pages)
 

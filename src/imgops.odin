@@ -3,7 +3,7 @@ package main
 img_to_gray :: proc(src, dst: ^Img) {
 	if src.channels == 1 {
 		for y in 0 ..< src.h {
-			copy(dst.pixels[y * dst.stride:], src.pixels[y * src.stride:], src.w)
+			copy(dst.pixels[y*dst.stride:y*dst.stride+src.w], src.pixels[y*src.stride:y*src.stride+src.w])
 		}
 		return
 	}
@@ -156,7 +156,7 @@ img_compute_feature :: proc(crop: ^Img, N, G, color: int, out: []u8) {
 		img_resize_area(crop, &tmp, N, N)
 	}
 
-	maxv := (1 << G) - 1
+	maxv := (1 << u32(G)) - 1
 	for i in 0 ..< N * N * channels {
 		v := int(tmp_buf[i])
 		if G >= 8 {
@@ -173,7 +173,7 @@ img_compute_feature :: proc(crop: ^Img, N, G, color: int, out: []u8) {
 
 img_compute_feature_multires :: proc(crop: ^Img, scales: []int, G, has_edges, color: int, out: []u8) {
 	pos := 0
-	maxv := (1 << G) - 1
+	maxv := (1 << u32(G)) - 1
 
 	max_n := 0
 	for s in scales {

@@ -47,8 +47,8 @@ atlas_free :: proc(atlas: ^Atlas_Cache) {
 
 atlas_hash :: proc(op_id, tw, th: int) -> u32 {
     h := u32(op_id) * 2654435761
-    h ^= u32(tw) * 374761393
-    h ^= u32(th) * 668265263
+    h ~= u32(tw) * 374761393
+    h ~= u32(th) * 668265263
     if h == 0 { h = 1 }
     return h
 }
@@ -114,7 +114,7 @@ atlas_insert :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int, src_pixels: []u8, 
             row_bytes := tw * src_channels
             for y in 0 ..< th {
                 copy(atlas.entries[use_idx].pixels[y * atlas.entries[use_idx].stride:],
-                     src_pixels[y * src_stride:], row_bytes)
+                     src_pixels[y * src_stride:])
             }
             atlas.entries[use_idx].bytes = entry_bytes
             atlas.entries[use_idx].valid = 1
@@ -133,15 +133,15 @@ atlas_insert :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int, src_pixels: []u8, 
 
 // ── Manifest loading ──
 load_manifest :: proc(path: string, out_insts: ^[^]Inst, out_n: ^int, target_w, target_h: int) -> int {
-    data, ok := os.read_entire_file_from_path(path)
-    if !ok { return -1 }
+    data, err := os.read_entire_file_from_path(path, context.allocator)
+    if err != nil { return -1 }
     defer delete(data)
     
     if len(data) < 12 { return -1 }
     
-    src_w := int(*(*u32)(&data[0]))
-    src_h := int(*(*u32)(&data[4]))
-    n := int(*(*u32)(&data[8]))
+    src_w := int((^u32)(&data[0])^)
+    src_h := int((^u32)(&data[4])^)
+    n := int((^u32)(&data[8])^)
     if n > MAX_INSTS { return -1 }
     
     // Compute scale
@@ -159,12 +159,12 @@ load_manifest :: proc(path: string, out_insts: ^[^]Inst, out_n: ^int, target_w, 
     off := 12
     for i in 0 ..< n {
         if off + 24 > len(data) { delete(insts); return -1 }
-        bx := *(*i32)(&data[off])
-        by := *(*i32)(&data[off + 4])
-        bw := *(*i32)(&data[off + 8])
-        bh := *(*i32)(&data[off + 12])
-        op_id := *(*i32)(&data[off + 16])
-        page_idx := *(*i32)(&data[off + 20])
+        bx := (^i32)(&data[off])^
+        by := (^i32)(&data[off + 4])^
+        bw := (^i32)(&data[off + 8])^
+        bh := (^i32)(&data[off + 12])^
+        op_id := (^i32)(&data[off + 16])^
+        page_idx := (^i32)(&data[off + 20])^
         off += 24
         
         if scale != 1.0 {
@@ -228,7 +228,10 @@ render_main :: proc() {
     manifest_paths: [dynamic]string
     defer delete(manifest_paths)
     
-    for entry in os.read_dir(dir_handle) {
+    entries, dir_err := os.read_dir(dir_handle)
+    if dir_err != nil { os.close(dir_handle); return }
+    
+    for entry in entries {
         name := entry.name
         if !strings.has_suffix(name, ".bin") { continue }
         if name == "fps.bin" { continue }
@@ -249,12 +252,12 @@ render_main :: proc() {
         tmp_n: int
         if load_manifest(manifest_paths[0], &tmp_insts, &tmp_n, 99999, 99999) == 0 {
             // Read src_w/src_h from raw file instead
-            data, data_ok := os.read_entire_file_from_path(manifest_paths[0])
-            if data_ok && len(data) >= 8 {
-                width = int(*(*u32)(&data[0]))
-                height = int(*(*u32)(&data[4]))
+            data, data_err := os.read_entire_file_from_path(manifest_paths[0], context.allocator)
+            if data_err == nil && len(data) >= 8 {
+                width = int((^u32)(&data[0])^)
+                height = int((^u32)(&data[4])^)
             }
-            if data_ok { delete(data) }
+            if data_err == nil { delete(data) }
             delete(tmp_insts)
         }
     }
@@ -264,10 +267,10 @@ render_main :: proc() {
     // Auto-detect fps from sidecar
     if fps_val <= 0.0 {
         fps_path := fmt.tprintf("%s/fps.bin", man_dir)
-        fps_data, fps_ok := os.read_entire_file_from_path(fps_path)
-        if fps_ok {
+        fps_data, fps_err := os.read_entire_file_from_path(fps_path, context.allocator)
+        if fps_err == nil {
             if len(fps_data) >= 8 {
-                fps_val = *(*f64)(&fps_data[0])
+                fps_val = (^f64)(&fps_data[0])^
             }
             delete(fps_data)
         }
@@ -428,7 +431,7 @@ render_main :: proc() {
                         canvas_off := (dst_y * width + copy_x) * channels
                         tile_off := yy * tile_stride + copy_src_x * tile_channels
                         if canvas_off + copy_bytes <= len(canvas) && tile_off + copy_bytes <= len(tile_pixels) {
-                            copy(canvas[canvas_off:], tile_pixels[tile_off:], copy_bytes)
+                            copy(canvas[canvas_off:], tile_pixels[tile_off:])
                         }
                     }
                 }

@@ -7,7 +7,7 @@ import "core:strings"
 VERSION :: "1.0.0"
 
 print_help :: proc() {
-    fmt.eprintlnf(
+    fmt.eprintfln(
         "BadOdinStein v%s — tiled video encoder using PDF/image library matching\n" +
         "\n" +
         "Usage:\n" +
@@ -23,7 +23,7 @@ print_help :: proc() {
 }
 
 print_arrange_help :: proc() {
-    fmt.eprintlnf(
+    fmt.eprintfln(
         "BadOdinStein arrange — decode video, match tiles, write manifests\n" +
         "\n" +
         "Usage:\n" +
@@ -43,7 +43,7 @@ print_arrange_help :: proc() {
 }
 
 print_render_help :: proc() {
-    fmt.eprintlnf(
+    fmt.eprintfln(
         "BadOdinStein render — assemble frames from manifests, encode output video\n" +
         "\n" +
         "Usage:\n" +
@@ -64,7 +64,7 @@ print_render_help :: proc() {
 }
 
 print_build_help :: proc() {
-    fmt.eprintlnf(
+    fmt.eprintfln(
         "BadOdinStein build — build source library from PDFs and images\n" +
         "\n" +
         "Usage:\n" +
@@ -122,11 +122,11 @@ main :: proc() {
         print_help()
 
     case "--version", "-V":
-        fmt.eprintlnf("badodin v%s", VERSION)
+        fmt.eprintfln("badodin v%s", VERSION)
 
     case:
-        fmt.eprintlnf("Unknown command: %s", cmd)
-        fmt.eprintlnf("Run 'badodin help' for usage.")
+        fmt.eprintfln("Unknown command: %s", cmd)
+        fmt.eprintfln("Run 'badodin help' for usage.")
         os.exit(1)
     }
 }
