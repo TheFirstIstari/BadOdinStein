@@ -1,7 +1,7 @@
 package main
 
-import "core:c"
-import "core:mem"
+import "core:sys/posix"
+import "core:fmt"
 
 // system_detect detects CPU cores and physical memory at runtime.
 system_detect :: proc() -> SystemConfig {
@@ -18,17 +18,20 @@ system_detect :: proc() -> SystemConfig {
 }
 
 detect_cores :: proc() -> int {
-    n := c.sysconf(c._SC_NPROCESSORS_ONLN)
-    if n > 0 { return int(n) }
+    when ODIN_OS == .Linux || ODIN_OS == .Darwin {
+        n := int(posix.sysconf(posix._SC_NPROCESSORS_ONLN))
+        if n > 0 { return n }
+    }
     return 1
 }
 
 detect_total_memory :: proc() -> u64 {
-    // Try POSIX sysconf first
-    pages := c.sysconf(c._SC_PHYS_PAGES)
-    page_size := c.sysconf(c._SC_PAGE_SIZE)
-    if pages > 0 && page_size > 0 {
-        return u64(pages) * u64(page_size)
+    when ODIN_OS == .Linux || ODIN_OS == .Darwin {
+        page_size := u64(posix.sysconf(posix._SC_PAGE_SIZE))
+        pages := u64(posix.sysconf(posix._SC_PHYS_PAGES))
+        if pages > 0 && page_size > 0 {
+            return page_size * pages
+        }
     }
     return 0
 }

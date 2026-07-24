@@ -5,6 +5,7 @@ import "core:os"
 import "core:strings"
 import "core:mem"
 import "core:math"
+import "core:time"
 
 MAX_INSTS :: 65536
 FRAME_QUEUE_SIZE :: 4
@@ -221,14 +222,14 @@ render_main :: proc() {
     cli_info("registry: %d entries", reg.n)
     
     // Scan manifests
-    dir_handle, ok := os.open(man_dir)
-    if !ok { return }
+    dir_handle, derr := os.open(man_dir)
+    if derr != os.ERROR_NONE { return }
     defer os.close(dir_handle)
     
     manifest_paths: [dynamic]string
     defer delete(manifest_paths)
     
-    entries, dir_err := os.read_dir(dir_handle)
+    entries, dir_err := os.read_dir(dir_handle, context.allocator)
     if dir_err != nil { os.close(dir_handle); return }
     
     for entry in entries {

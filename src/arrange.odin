@@ -525,20 +525,20 @@ arrange_main :: proc() {
 		cli_die("arrange requires --video <file>")
 	}
 
-	db: FeatureDB
-	if load_features(feat_path, &db) != 0 {
-		cli_die("cannot load features: %s", feat_path)
-	}
-	defer delete(db.data)
+    db: FeatureDB
+    defer delete(db.data)
+    if load_features(feat_path, &db) != 0 {
+        cli_die("cannot load features: %s", feat_path)
+    }
 
-	reg: Registry
-	if load_registry(reg_path, &reg) != 0 {
-		cli_die("cannot load registry: %s", reg_path)
-	}
-	defer {
-		for e in reg.entries { delete(e.pdf_path) }
-		delete(reg.entries)
-	}
+    reg: Registry
+    defer {
+        for e in reg.entries { delete(e.pdf_path) }
+        delete(reg.entries)
+    }
+    if load_registry(reg_path, &reg) != 0 {
+        cli_die("cannot load registry: %s", reg_path)
+    }
 
 	state.g_G = db.G
 	state.g_feat_len = db.feat_len

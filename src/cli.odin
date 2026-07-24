@@ -119,39 +119,43 @@ cli_parse :: proc(args: []string) {
 cli_info :: proc(msg: string, args: ..any) {
 	if g_cli.quiet { return }
 	if g_cli.json_mode {
-		fmt.eprintfln("[info] " + msg, args)
+		fmt.eprintf("[info] ")
 	} else {
 		"\033[1;36m[info]\033[0m ".eprint()
-		fmt.eprintfln(msg, args)
 	}
+	fmt.eprintf(msg, ..args)
+	fmt.eprintf("\n")
 }
 
 cli_warn :: proc(msg: string, args: ..any) {
 	if g_cli.json_mode {
-		fmt.eprintfln("[warn] " + msg, args)
+		fmt.eprintf("[warn] ")
 	} else {
 		"\033[1;33m[warn]\033[0m ".eprint()
-		fmt.eprintfln(msg, args)
 	}
+	fmt.eprintf(msg, ..args)
+	fmt.eprintf("\n")
 }
 
 cli_error :: proc(msg: string, args: ..any) {
 	if g_cli.json_mode {
-		fmt.eprintfln("[error] " + msg, args)
+		fmt.eprintf("[error] ")
 	} else {
 		"\033[1;31m[error]\033[0m ".eprint()
-		fmt.eprintfln(msg, args)
 	}
+	fmt.eprintf(msg, ..args)
+	fmt.eprintf("\n")
 }
 
 cli_die :: proc(msg: string, args: ..any) -> ! {
 	if g_cli.json_mode {
-		fmt.eprintfln("[fatal] " + msg, args)
+		fmt.eprintf("[fatal] ")
 	} else {
 		"\033[1;31m[fatal]\033[0m ".eprint()
-		fmt.eprintfln(msg, args)
 	}
-	exit(1)
+	fmt.eprintf(msg, ..args)
+	fmt.eprintf("\n")
+	os.exit(1)
 }
 
 // ── Progress ──

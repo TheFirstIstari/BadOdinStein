@@ -119,8 +119,8 @@ build_main :: proc() {
     }
     
     // Scan directory
-    dir_handle, ok := os.open(src)
-    if !ok { return }
+    dir_handle, derr := os.open(src)
+    if derr != os.ERROR_NONE { return }
     defer os.close(dir_handle)
     
     paths: [dynamic]string
@@ -135,7 +135,7 @@ build_main :: proc() {
     defer delete(fb.data)
     
     total_sources := 0
-    entries, dir_err := os.read_dir(dir_handle)
+    entries, dir_err := os.read_dir(dir_handle, context.allocator)
     if dir_err != nil { os.close(dir_handle); return }
     for entry in entries {
         if entry.name[0] == '.' { continue }
@@ -153,12 +153,12 @@ build_main :: proc() {
              total_sources, G, has_edges, color, feat_len)
     
     // Re-scan and process
-    dir_handle2, ok := os.open(src)
-    if !ok { return }
+    dir_handle2, derr2 := os.open(src)
+    if derr2 != os.ERROR_NONE { return }
     defer os.close(dir_handle2)
     
     processed := 0
-    entries2, dir_err2 := os.read_dir(dir_handle2)
+    entries2, dir_err2 := os.read_dir(dir_handle2, context.allocator)
     if dir_err2 != nil { os.close(dir_handle2); return }
     for entry in entries2 {
         if entry.name[0] == '.' { continue }
