@@ -39,18 +39,18 @@ write_features :: proc(path: string, fb: ^Feat_Buf, nreg, feat_len, G, n_scales:
     buf := make([]u8, 16 + n_scales * 4 + 4 + 4)
     defer delete(buf)
     
-    *(&u32, &buf[0]) = u32(nreg)
-    *(&u32, &buf[4]) = u32(feat_len)
-    *(&u32, &buf[8]) = u32(G)
-    *(&u32, &buf[12]) = u32(n_scales)
+    *(*u32)(&buf[0]) = u32(nreg)
+    *(*u32)(&buf[4]) = u32(feat_len)
+    *(*u32)(&buf[8]) = u32(G)
+    *(*u32)(&buf[12]) = u32(n_scales)
     off := 16
     for i in 0 ..< n_scales {
-        *(&u32, &buf[off]) = u32(scales[i])
+        *(*u32)(&buf[off]) = u32(scales[i])
         off += 4
     }
-    *(&u32, &buf[off]) = u32(has_edges)
+    *(*u32)(&buf[off]) = u32(has_edges)
     off += 4
-    *(&u32, &buf[off]) = u32(channels)
+    *(*u32)(&buf[off]) = u32(channels)
     
     os.write(f, buf)
     os.write(f, fb.data)
@@ -63,14 +63,14 @@ write_registry :: proc(path: string, paths: []string, page_idxs: []int, nreg: in
     
     header := make([]u8, 4)
     defer delete(header)
-    *(&u32, &header[0]) = u32(nreg)
+    *(*u32)(&header[0]) = u32(nreg)
     os.write(f, header)
     
     for i in 0 ..< nreg {
         entry_buf := make([]u8, 8 + len(paths[i]))
         defer delete(entry_buf)
-        *(&i32, &entry_buf[0]) = i32(page_idxs[i])
-        *(&u32, &entry_buf[4]) = u32(len(paths[i]))
+        *(*i32)(&entry_buf[0]) = i32(page_idxs[i])
+        *(*u32)(&entry_buf[4]) = u32(len(paths[i]))
         copy(entry_buf[8:], paths[i])
         os.write(f, entry_buf)
     }
@@ -88,8 +88,8 @@ build_main :: proc() {
     }
     
     G := cli_opt_int("bits", 1)
-    has_edges := if cli_has("no-edges") { 0 } else { 1 }
-    color := if cli_has("color") { 1 } else { 0 }
+    has_edges := 0 if cli_has("no-edges") else 1
+    color := 1 if cli_has("color") else 0
     feat_out := cli_opt_str("out", "features.bin")
     reg_out := "registry.bin"
     
@@ -182,7 +182,8 @@ build_main :: proc() {
     }
     
     // Write outputs
-    write_features(feat_out, &fb, len(paths), feat_len, G, n_feat_scales, feat_scales[:n_feat_scales], has_edges, if color != 0 { 3 } else { 1 })
+    channels_val := 3 if color != 0 else 1
+    write_features(feat_out, &fb, len(paths), feat_len, G, n_feat_scales, feat_scales[:n_feat_scales], has_edges, channels_val)
     write_registry(reg_out, paths[:], page_idxs[:], len(paths))
     
     cli_info("output: %s (%d entries, %d bytes/feature)", feat_out, len(paths), feat_len)

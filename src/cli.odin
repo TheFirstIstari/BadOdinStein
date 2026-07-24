@@ -17,7 +17,10 @@ g_cli: CLI_Ctx
 
 // ── Option store (flat key=value pairs) ──
 OPT_MAX :: 128
-g_opts:  [OPT_MAX]struct { name: [64]u8; value: [256]u8 }
+g_opts:  [OPT_MAX]struct {
+    name:  [64]u8,
+    value: [256]u8,
+}
 g_nopts: int
 
 cli_store :: proc(name, value: string) {
@@ -105,7 +108,7 @@ cli_parse :: proc(args: []string) {
 				cli_store(strings.substring(arg, 2, len(arg)), "1")
 			}
 		case len(arg) > 1 && arg[0] == '-' && arg[1] != '-':
-			flag := arg[1..2]
+			flag := arg[1:2]
 			cli_store(flag, "1")
 		}
 		i += 1

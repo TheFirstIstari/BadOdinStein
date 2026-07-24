@@ -104,7 +104,7 @@ atlas_insert :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int, src_pixels: []u8, 
     for probe in 0 ..< atlas.capacity {
         idx := int((h + u32(probe)) % u32(atlas.capacity))
         if atlas.entries[idx].valid == 0 || atlas.entries[idx].valid == 2 {
-            use_idx := if tombstone_idx >= 0 { tombstone_idx } else { idx }
+            use_idx := idx if tombstone_idx < 0 else tombstone_idx
             atlas.entries[use_idx].op_id = op_id
             atlas.entries[use_idx].tile_w = tw
             atlas.entries[use_idx].tile_h = th
@@ -139,9 +139,9 @@ load_manifest :: proc(path: string, out_insts: ^[^]Inst, out_n: ^int, target_w, 
     
     if len(data) < 12 { return -1 }
     
-    src_w := int(*(&u32, &data[0]))
-    src_h := int(*(&u32, &data[4]))
-    n := int(*(&u32, &data[8]))
+    src_w := int(*(*u32)(&data[0]))
+    src_h := int(*(*u32)(&data[4]))
+    n := int(*(*u32)(&data[8]))
     if n > MAX_INSTS { return -1 }
     
     // Compute scale
@@ -159,12 +159,12 @@ load_manifest :: proc(path: string, out_insts: ^[^]Inst, out_n: ^int, target_w, 
     off := 12
     for i in 0 ..< n {
         if off + 24 > len(data) { delete(insts); return -1 }
-        bx := *(&i32, &data[off])
-        by := *(&i32, &data[off + 4])
-        bw := *(&i32, &data[off + 8])
-        bh := *(&i32, &data[off + 12])
-        op_id := *(&i32, &data[off + 16])
-        page_idx := *(&i32, &data[off + 20])
+        bx := *(*i32)(&data[off])
+        by := *(*i32)(&data[off + 4])
+        bw := *(*i32)(&data[off + 8])
+        bh := *(*i32)(&data[off + 12])
+        op_id := *(*i32)(&data[off + 16])
+        page_idx := *(*i32)(&data[off + 20])
         off += 24
         
         if scale != 1.0 {
@@ -249,11 +249,12 @@ render_main :: proc() {
         tmp_n: int
         if load_manifest(manifest_paths[0], &tmp_insts, &tmp_n, 99999, 99999) == 0 {
             // Read src_w/src_h from raw file instead
-            data := os.read_entire_file_from_path(manifest_paths[0]) or {}
-            if len(data) >= 8 {
-                width = int(*(&u32, &data[0]))
-                height = int(*(&u32, &data[4]))
+            data, data_ok := os.read_entire_file_from_path(manifest_paths[0])
+            if data_ok && len(data) >= 8 {
+                width = int(*(*u32)(&data[0]))
+                height = int(*(*u32)(&data[4]))
             }
+            if data_ok { delete(data) }
             delete(tmp_insts)
         }
     }
@@ -263,17 +264,18 @@ render_main :: proc() {
     // Auto-detect fps from sidecar
     if fps_val <= 0.0 {
         fps_path := fmt.tprintf("%s/fps.bin", man_dir)
-        if fps_data := os.read_entire_file_from_path(fps_path) {
+        fps_data, fps_ok := os.read_entire_file_from_path(fps_path)
+        if fps_ok {
             if len(fps_data) >= 8 {
-                fps_val = *(&f64, &fps_data[0])
+                fps_val = *(*f64)(&fps_data[0])
             }
             delete(fps_data)
         }
     }
     if fps_val <= 0.0 { fps_val = 30.0 }
     
-    cli_info("render: %dx%d @ %.1f fps %s -> %s", width, height, fps_val,
-             if channels == 3 { "(color)" } else { "(grayscale)" }, output)
+    mode_str := "(color)" if channels == 3 else "(grayscale)"
+    cli_info("render: %d frames %dx%d %s %.1f fps -> %s", len(manifest_paths), width, height, mode_str, fps_val, output)
     
     // Pre-load all manifests
     loaded_insts := make([]^Inst, len(manifest_paths))
@@ -324,7 +326,8 @@ render_main :: proc() {
             for i in 0 ..< n {
                 if insts[i].op_id < 0 {
                     // Solid fill
-                    val := u8(if insts[i].op_id == -2 { 255 } else { 0 })
+                    val: u8 = 0
+                    if insts[i].op_id == -2 { val = 255 }
                     sy0 := int(insts[i].y)
                     sx0 := int(insts[i].x)
                     for yy in 0 ..< int(insts[i].h) {

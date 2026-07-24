@@ -243,15 +243,12 @@ ffmpeg_is_error :: proc(code: c.int) -> bool {
 }
 
 ffmpeg_err_name :: proc(code: c.int) -> string {
-	// AVERROR maps to negative errno on most platforms
-	switch {
-	case code == AVERROR_EAGAIN:    return "EAGAIN"
-	case code == AVERROR_EOF:       return "EOF"
-	case code == AVERROR_INPUT_CHANGED: return "INPUT_CHANGED"
-	case code == AVERROR_DECODER_NOT_FOUND: return "DECODER_NOT_FOUND"
-	case code == 0:                 return "OK"
-	default:                        return "UNKNOWN"
-	}
+	if code == AVERROR_EAGAIN { return "EAGAIN" }
+	if code == AVERROR_EOF { return "EOF" }
+	if code == AVERROR_INPUT_CHANGED { return "INPUT_CHANGED" }
+	if code == AVERROR_DECODER_NOT_FOUND { return "DECODER_NOT_FOUND" }
+	if code == 0 { return "OK" }
+	return "UNKNOWN"
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
@@ -335,9 +332,8 @@ video_decoder_open :: proc(path: string) -> ^VideoDecoder {
 	}
 
 	// ── Find decoder + open ──
-	cp := cast(^AVCodecParameters_Layout) (
-		cast(^AVStream_Layout) streams_ptr[dec.video_stream],
-	).codecpar
+	stream_ptr := cast(^AVStream_Layout)(streams_ptr[dec.video_stream])
+	cp := cast(^AVCodecParameters_Layout)(stream_ptr.codecpar)
 
 	codec := c.avcodec_find_decoder(cp.codec_id)
 	if codec == nil {
@@ -631,7 +627,7 @@ video_probe :: proc(path: string) -> (info: VideoInfo, ok: bool) {
 	c_path := strings.clone_to_cstring(path, context.allocator)
 	defer delete(c_path)
 
-	var fmt_ctx: ^AVFormatContext
+	fmt_ctx: ^AVFormatContext
 	ret := c.avformat_open_input(&fmt_ctx, c_path, nil, nil)
 	if ret < 0 { return }
 

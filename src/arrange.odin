@@ -56,7 +56,7 @@ cache_grow :: proc(tab: ^[]Cache_Slot, cap: ^int) {
 		for i in 0 ..< cap^ {
 			if tab^[i].hash != 0 {
 				idx := u64(tab^[i].hash) & mask
-				while nt[idx].hash != 0 { idx = (idx + 1) & mask }
+				for nt[idx].hash != 0 { idx = (idx + 1) & mask }
 				nt[idx] = tab^[i]
 			}
 		}
@@ -72,7 +72,7 @@ cache_put :: proc(tab: ^[]Cache_Slot, cap, n: ^int, h: u64, pid: i32) {
 	}
 	mask := u64(cap^ - 1)
 	idx := u64(h) & mask
-	while tab^[idx].hash != 0 { idx = (idx + 1) & mask }
+	for tab^[idx].hash != 0 { idx = (idx + 1) & mask }
 	tab^[idx].hash = h
 	tab^[idx].pid = pid
 	n^ += 1
@@ -130,10 +130,10 @@ load_features :: proc(path: string, db: ^FeatureDB) -> int {
 	if len(data) < 24 { return -1 }
 	buf := data
 
-	n := *(&u32, &buf[0])
-	feat_len := *(&u32, &buf[4])
-	G := *(&u32, &buf[8])
-	n_scales := *(&u32, &buf[12])
+	n := *(*u32)(&buf[0])
+	feat_len := *(*u32)(&buf[4])
+	G := *(*u32)(&buf[8])
+	n_scales := *(*u32)(&buf[12])
 
 	if G == 0 || G > 8 || n_scales == 0 || n_scales > 16 { return -1 }
 
@@ -141,19 +141,21 @@ load_features :: proc(path: string, db: ^FeatureDB) -> int {
 	if len(data) < header_len { return -1 }
 
 	for i in 0 ..< int(n_scales) {
-		s := *(&u32, &buf[16 + i * 4])
+		s := *(*u32)(&buf[16 + i * 4])
 		if s == 0 || s > 256 { return -1 }
 		db.scales[i] = int(s)
 	}
 
-	has_edges := *(&u32, &buf[16 + int(n_scales) * 4])
+	has_edges := *(*u32)(&buf[16 + int(n_scales) * 4])
 
 	gray_feat_len: u64 = 0
 	for i in 0 ..< int(n_scales) {
 		gray_feat_len += u64(db.scales[i] * db.scales[i])
 	}
-	expected_gray := gray_feat_len * (if has_edges != 0 { 2 } else { 1 })
-	expected_color := gray_feat_len * (1 + (if has_edges != 0 { u64(1) } else { u64(0) }) + 3)
+	gray_mult: u64 = 2 if has_edges != 0 else 1
+	edge_mult: u64 = 1 if has_edges != 0 else 0
+	expected_gray := gray_feat_len * gray_mult
+	expected_color := gray_feat_len * (1 + edge_mult + 3)
 
 	detected_channels := 0
 	if u64(feat_len) == expected_gray {
@@ -161,7 +163,7 @@ load_features :: proc(path: string, db: ^FeatureDB) -> int {
 	} else if u64(feat_len) == expected_color {
 		detected_channels = 3
 		if len(data) >= header_len + 4 {
-			ch := *(&u32, &buf[header_len])
+			ch := *(*u32)(&buf[header_len])
 			if ch == 3 { header_len += 4 }
 		}
 	} else {
@@ -193,15 +195,15 @@ load_registry :: proc(path: string, reg: ^Registry) -> int {
 
 	if len(data) < 4 { return -1 }
 	buf := data
-	n := *(&u32, &buf[0])
+	n := *(*u32)(&buf[0])
 	if u32(n) > u32(len(data)) / 5 { return -1 }
 
 	off := 4
 	for i in 0 ..< int(n) {
 		if off + 8 > len(data) { return -1 }
-		page_idx := *(&i32, &buf[off])
+		page_idx := *(*i32)(&buf[off])
 		off += 4
-		plen := *(&u32, &buf[off])
+		plen := *(*u32)(&buf[off])
 		off += 4
 		if page_idx < 0 { return -1 }
 		if off + int(plen) > len(data) { return -1 }
@@ -220,18 +222,18 @@ write_manifest :: proc(path: string, fw, fh: int, manifest: []Inst, n: int) {
 	mbuf := make([]u8, total)
 	defer delete(mbuf)
 
-	*(&u32, &mbuf[0]) = u32(fw)
-	*(&u32, &mbuf[4]) = u32(fh)
-	*(&u32, &mbuf[8]) = u32(n)
+	*(*u32)(&mbuf[0]) = u32(fw)
+	*(*u32)(&mbuf[4]) = u32(fh)
+	*(*u32)(&mbuf[8]) = u32(n)
 
 	rp := 12
 	for k in 0 ..< n {
-		*(&i32, &mbuf[rp + 0])  = manifest[k].x
-		*(&i32, &mbuf[rp + 4])  = manifest[k].y
-		*(&i32, &mbuf[rp + 8])  = manifest[k].w
-		*(&i32, &mbuf[rp + 12]) = manifest[k].h
-		*(&i32, &mbuf[rp + 16]) = manifest[k].op_id
-		*(&i32, &mbuf[rp + 20]) = manifest[k].page_idx
+		*(*i32)(&mbuf[rp + 0])  = manifest[k].x
+		*(*i32)(&mbuf[rp + 4])  = manifest[k].y
+		*(*i32)(&mbuf[rp + 8])  = manifest[k].w
+		*(*i32)(&mbuf[rp + 12]) = manifest[k].h
+		*(*i32)(&mbuf[rp + 16]) = manifest[k].op_id
+		*(*i32)(&mbuf[rp + 20]) = manifest[k].page_idx
 		rp += 24
 	}
 
@@ -244,7 +246,7 @@ write_manifest :: proc(path: string, fw, fh: int, manifest: []Inst, n: int) {
 solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, color_channels, w, h: int,
                    db: ^FeatureDB, reg: ^Registry, pid_white, pid_black, max_block, hero_min: int,
                    manifest: []Inst, nout: ^int, tiles: []u8, ntiles: ^int, t: ^Timings) {
-	const CELL_SIZE :: 8
+	CELL_SIZE :: 8
 
 	if s.cap_w < w || s.cap_h < h {
 		s.cap_w = w
@@ -259,7 +261,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 	for y in 0 ..< h {
 		row_sum: i64 = 0
 		for x in 0 ..< w {
-			val: i64 = if gray[y * w + x] > 127 { 1 } else { 0 }
+			val: i64 = 1 if gray[y * w + x] > 127 else 0
 			row_sum += val
 			s.sum[(y + 1) * sum_stride + (x + 1)] = row_sum + s.sum[y * sum_stride + (x + 1)]
 		}
@@ -288,7 +290,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 			x := cx * CELL_SIZE
 			if s.visited[cy * gw + cx] != 0 { continue }
 
-			cell_color := if gray[y * w + x] > 127 { 1 } else { 0 }
+			cell_color := 1 if gray[y * w + x] > 127 else 0
 			mcw, mch := 1, 1
 
 			for cx + mcw + 1 <= gw && mcw + 1 <= max_cells {
@@ -308,7 +310,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 				cnt := s.sum[y1 * sum_stride + x1] - s.sum[y0 * sum_stride + x1] -
 				       s.sum[y1 * sum_stride + x0] + s.sum[y0 * sum_stride + x0]
 				area := (x1 - x0) * (y1 - y0)
-				pure := if cell_color == 1 { cnt == i64(area) } else { cnt == 0 }
+				pure := (cnt == i64(area)) if cell_color == 1 else (cnt == 0)
 				if pure { mcw += 1 } else { break }
 			}
 
@@ -329,7 +331,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 				cnt := s.sum[y1 * sum_stride + x1] - s.sum[y0 * sum_stride + x1] -
 				       s.sum[y1 * sum_stride + x0] + s.sum[y0 * sum_stride + x0]
 				area := (x1 - x0) * (y1 - y0)
-				pure := if cell_color == 1 { cnt == i64(area) } else { cnt == 0 }
+				pure := (cnt == i64(area)) if cell_color == 1 else (cnt == 0)
 				if pure { mch += 1 } else { break }
 			}
 
@@ -345,7 +347,8 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 			}
 
 			if mw >= hero_min && mh >= hero_min {
-				manifest[n] = Inst{i32(x), i32(y), i32(mw), i32(mh), i32(if cell_color == 1 { -2 } else { -1 }), -1}
+				solid_op: i32 = -2 if cell_color == 1 else -1
+				manifest[n] = Inst{i32(x), i32(y), i32(mw), i32(mh), solid_op, -1}
 				n += 1
 			} else {
 				if n_specs >= spec_cap {
@@ -373,7 +376,8 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 	}
 	for i in 0 ..< n_specs { s.coarse_hit[i] = -1 }
 
-	crop_sz := max_block * max_block * (if db.channels == 3 { 3 } else { 1 })
+	ch_mult: int = 3 if db.channels == 3 else 1
+	crop_sz := max_block * max_block * ch_mult
 	if crop_sz > s.crop_cap {
 		s.crop_bufs = make([]u8, crop_sz)
 		s.crop_cap = crop_sz
@@ -386,7 +390,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 
 	for i in 0 ..< n_specs {
 		sp := s.specs[i]
-		my_crop := s.crop_bufs[:sp.w * sp.h * (if db.channels == 3 { 3 } else { 1 })]
+		my_crop := s.crop_bufs[:sp.w * sp.h * ch_mult]
 
 		if db.channels == 3 {
 			for yy in 0 ..< sp.h {
@@ -425,8 +429,8 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 					}
 				}
 				area := (sy1 - sy0) * (sx1 - sx0)
-				v := if area > 0 { int(psum / u64(area)) } else { 0 }
-				q := if db.G >= 8 { v } else { (v * maxv + 127) / 255 }
+				v := int(psum / u64(area)) if area > 0 else 0
+				q := v if db.G >= 8 else (v * maxv + 127) / 255
 				if q > maxv { q = maxv }
 				coarse_feat[dy * N + dx] = u8(q)
 			}
@@ -440,8 +444,9 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 		}
 
 		crop_img := Img{w = sp.w, h = sp.h, stride = sp.w * db.channels, pixels = my_crop, channels = db.channels}
-		out_slice := feat_bufs[i * feat_len ..]
-		img_compute_feature_multires(&crop_img, s.g_scales[:s.g_n_scales], db.G, db.has_edges, if db.channels == 3 { 1 } else { 0 }, out_slice)
+		out_slice := feat_bufs[i * feat_len :]
+		feature_ch: int = 1 if db.channels == 3 else 0
+		img_compute_feature_multires(&crop_img, s.g_scales[:s.g_n_scales], db.G, db.has_edges, feature_ch, out_slice)
 	}
 
 	for i in 0 ..< n_specs {
@@ -461,7 +466,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 	nt = 0
 	for i in 0 ..< n_specs {
 		if s.coarse_hit[i] >= 0 { continue }
-		feat := feat_bufs[i * feat_len ..]
+		feat := feat_bufs[i * feat_len :]
 		h := full_feat_hash(feat, feat_len)
 		found, pid := cache_lookup(s.fcache, s.fcache_cap, h)
 		if found {
@@ -488,7 +493,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 			midx := s.specs[s.miss_idx[i]].manifest_idx
 			manifest[midx].op_id = i32(pid)
 			manifest[midx].page_idx = reg.entries[pid].page_idx
-			feat := tiles[i * feat_len ..]
+			feat := tiles[i * feat_len :]
 			fh := full_feat_hash(feat, feat_len)
 			cache_put(&s.fcache, &s.fcache_cap, &s.fcache_n, fh, i32(pid))
 			ch := fnv1a_64(feat[:coarse_len])

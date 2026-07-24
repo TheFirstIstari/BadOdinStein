@@ -74,15 +74,16 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 
 			d := feature_l1(coarse_page, coarse_target)
 
-			kd := merged_dist[t * K ..]
-			kb := merged_best[t * K ..]
+			kd := merged_dist[t * K :]
+			kb := merged_best[t * K :]
 
 			if d >= kd[K - 1] { continue }
 
 			kd[K - 1] = d
 			kb[K - 1] = i
 
-			for k in K - 1 >.. 0 {
+			for ki in 0 ..< K - 1 {
+				k := K - 1 - ki
 				if kd[k] < kd[k - 1] {
 					tmp_d := kd[k]
 					kd[k] = kd[k - 1]
@@ -101,12 +102,12 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 		for t in 0 ..< num_targets {
 			best_d: u32 = max(u32)
 			best_i: int = -1
-			target := targets[t * feat_len ..]
-			kb := merged_best[t * K ..]
+			target := targets[t * feat_len :]
+			kb := merged_best[t * K :]
 
 			for k in 0 ..< K {
 				if kb[k] < 0 { break }
-				page := lib[kb[k] * feat_len ..]
+				page := lib[kb[k] * feat_len :]
 				d := feature_l1_bounded(page, target[:feat_len], best_d)
 				if d < best_d {
 					best_d = d
