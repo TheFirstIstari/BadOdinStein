@@ -147,7 +147,8 @@ load_manifest :: proc(path: string, out_insts: ^[]Inst, out_n: ^int, target_w, t
     
     // Compute scale
     scale: f64 = 1.0
-    ox, oy: f64 = 0, 0
+    ox: f64 = 0
+    oy: f64 = 0
     if src_w > 0 && src_h > 0 && (src_w != target_w || src_h != target_h) {
         sx := f64(target_w) / f64(src_w)
         sy := f64(target_h) / f64(src_h)
@@ -223,13 +224,13 @@ render_main :: proc() {
     
     // Scan manifests
     dir_handle, derr := os.open(man_dir)
-    if derr != os.ERROR_NONE { return }
+    if derr != nil { return }
     defer os.close(dir_handle)
     
     manifest_paths: [dynamic]string
     defer delete(manifest_paths)
     
-    entries, dir_err := os.read_dir(dir_handle)
+    entries, dir_err := os.read_dir(dir_handle, -1, context.allocator)
     if dir_err != nil { os.close(dir_handle); return }
     
     for entry in entries {
@@ -318,10 +319,10 @@ render_main :: proc() {
     if max_frames > 0 && max_frames < max_frames_actual { max_frames_actual = max_frames }
     
     frames_done := 0
-    start := time.tick()
+    start := time.tick_now()
     
     for fi in 0 ..< max_frames_actual {
-        clear(canvas)
+        mem.zero_slice(canvas)
         
         n := loaded_n[fi]
         insts := loaded_insts[fi]
@@ -350,7 +351,7 @@ render_main :: proc() {
                                     canvas[off+2] = val
                                 }
                             } else {
-                                clear(canvas[dst_y * width + fill_x:])
+                                mem.zero_slice(canvas[dst_y * width + fill_x:])
                                 canvas[dst_y * width + fill_x] = val
                                 // Actually need fill_w bytes
                                 for px in 0 ..< fill_w { canvas[dst_y * width + fill_x + px] = val }
@@ -443,7 +444,7 @@ render_main :: proc() {
         
         frames_done += 1
         if !g_cli.quiet && frames_done % 30 == 0 {
-            elapsed := f64(time.tick() - start) / f64(time.Second)
+            elapsed := time.duration_seconds(time.tick_since(start))
             fps_out := f64(frames_done) / max(elapsed, 0.001)
             cache_pct := 0.0
             if atlas.hits + atlas.misses > 0 {
@@ -456,7 +457,7 @@ render_main :: proc() {
     // TODO: Encode canvas frames to output video via video_encoder_open/write/close
     cli_info("rendered %d frames (encode not yet wired)", frames_done)
     
-    elapsed := f64(time.tick() - start) / f64(time.Second)
+    elapsed := time.duration_seconds(time.tick_since(start))
     fps_out := f64(frames_done) / max(elapsed, 0.001)
     cli_progress_done(fmt.tprintf("render complete in %.2fs | %.2f fps | %d frames", elapsed, fps_out, frames_done))
 }

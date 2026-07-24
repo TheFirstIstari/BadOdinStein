@@ -238,7 +238,7 @@ write_manifest :: proc(path: string, fw, fh: int, manifest: []Inst, n: int) {
 	}
 
 	f, ferr := os.create(path)
-	if ferr != os.ERROR_NONE { return }
+	if ferr != nil { return }
 	defer os.close(f)
 	os.write(f, mbuf)
 }
@@ -269,7 +269,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 
 	gh := (h + CELL_SIZE - 1) / CELL_SIZE
 	gw := (w + CELL_SIZE - 1) / CELL_SIZE
-	clear(s.visited[:gh * gw])
+	mem.zero_slice(s.visited[:gh * gw])
 
 	feat_len := db.feat_len
 	max_cells := max_block / CELL_SIZE
@@ -282,7 +282,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 		s.specs = make([]TileSpec, spec_cap)
 	}
 
-	t0 := time.tick()
+	t0 := time.tick_now()
 
 	for cy in 0 ..< gh {
 		y := cy * CELL_SIZE
@@ -386,7 +386,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 			feat_bufs := make([]u8, n_specs * feat_len)
 			defer delete(feat_bufs)
 
-			tf := time.tick()
+			tf := time.tick_now()
 
 			for i in 0 ..< n_specs {
 				sp := s.specs[i]
@@ -457,7 +457,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 					manifest[midx].page_idx = reg.entries[s.coarse_hit[i]].page_idx
 				}
 			}
-			t.feat += f64(time.tick() - tf) / f64(time.Second)
+			t.feat += time.duration_seconds(time.tick_since(tf))
 
 			if n_specs > s.miss_cap {
 				s.miss_idx = make([]int, n_specs)
@@ -482,7 +482,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 			}
 
 			if nt > 0 {
-				tm := time.tick()
+				tm := time.tick_now()
 				if nt > s.result_cap {
 					s.results = make([]int, nt)
 					s.result_cap = nt
@@ -499,13 +499,13 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 					ch := fnv1a_64(feat[:coarse_len])
 					cache_put(&s.ccache, &s.ccache_cap, &s.ccache_n, ch, i32(pid))
 				}
-				t.match += f64(time.tick() - tm) / f64(time.Second)
+				t.match += time.duration_seconds(time.tick_since(tm))
 				t.tiles += nt
 			}
 		}
 	}
 
-	t.solve += f64(time.tick() - t0) / f64(time.Second)
+	t.solve += time.duration_seconds(time.tick_since(t0))
 	nout^ = n
 	ntiles^ = nt
 }
