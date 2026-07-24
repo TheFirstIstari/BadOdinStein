@@ -1,0 +1,35 @@
+# Build artifacts
+*.exe
+*.o
+*.obj
+*.so
+*.dylib
+*.dll
+badodin
+badodin-*
+*.mov
+*.mp4
+
+# Temp files
+.manifests_*/
+.badapplestein-manifests-*/
+
+# Test artifacts
+test_lib/
+test_manifests/
+test_output*
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Library cache
+features.bin
+registry.bin

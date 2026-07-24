@@ -1,0 +1,8 @@
+[tools]
+odin = "latest"
+
+[tasks]
+build = "odin build src/ -out:badodin -o:speed"
+build-release = "odin build src/ -out:badodin -o:speed -define:ODIN_DEBUG=false"
+clean = "rm -f badodin badodin-* *.mov *.mp4"
+test = "./badodin --help"
