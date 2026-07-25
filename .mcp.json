@@ -7,12 +7,13 @@
     },
     "github-mcp": {
       "type": "stdio",
-      "command": "/Users/frobinson/dev/github-mcp-server/github-mcp-server",
-      "args": ["stdio"]
+      "command": "npx",
+      "args": ["-y", "github-mcp"]
     },
     "codebase-memory": {
       "type": "stdio",
-      "command": "/Users/frobinson/dev/codebase-memory-mcp/build/c/codebase-memory-mcp"
+      "command": "npx",
+      "args": ["-y", "codebase-memory-mcp"]
     }
   }
 }
