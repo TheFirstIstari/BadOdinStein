@@ -6,6 +6,8 @@ import "core:strings"
 import "core:mem"
 import "core:time"
 import "core:math"
+import "core:thread"
+import "core:simd"
 
 CELL :: 8
 CACHE_PROBE_MAX :: 32
@@ -243,6 +245,101 @@ write_manifest :: proc(path: string, fw, fh: int, manifest: []Inst, n: int) {
 	os.write(f, mbuf)
 }
 
+// Thread context for parallel feature extraction
+Feat_Work :: struct {
+	specs:        []TileSpec,
+	gray:         []u8,
+	gray_width:   int,
+	color_pixels: []u8,
+	color_stride: int,
+	channels:     int,
+	feat_len:     int,
+	N:            int,
+	G:            int,
+	has_edges:    int,
+	maxv:         int,
+	ch_mult:      int,
+	spec_start:   int,
+	spec_end:     int,
+	db_data:      []u8,
+	n_pages:      int,
+	coarse_len:   int,
+	scales:       []int,
+	n_scales:     int,
+	// Per-thread buffers (allocated once per thread)
+	crop_buf:     []u8,
+	coarse_feat:  []u8,
+	feat_bufs:    Feature_Buffers,
+	// Shared output arrays (each thread writes to distinct indices)
+	coarse_hit:   []int,
+	out_feat_bufs: []u8,
+	// Cache (read-only during parallel phase)
+	ccache:       []Cache_Slot,
+	ccache_cap:   int,
+}
+
+feat_thread_proc :: proc(t: ^thread.Thread) {
+	w := cast(^Feat_Work)t.data
+
+	for i in w.spec_start ..< w.spec_end {
+		sp := w.specs[i]
+		my_crop := w.crop_buf[:sp.w * sp.h * w.ch_mult]
+
+		if w.channels == 3 {
+			for yy in 0 ..< sp.h {
+				src_off := (sp.y + yy) * w.color_stride + sp.x * 3
+				dst_off := yy * sp.w * 3
+				copy(my_crop[dst_off:], w.color_pixels[src_off:src_off + sp.w * 3])
+			}
+		} else {
+			for yy in 0 ..< sp.h {
+				src_off := (sp.y + yy) * w.gray_width + sp.x
+				copy(my_crop[yy * sp.w:], w.gray[src_off:src_off + sp.w])
+			}
+		}
+
+		// Compute coarse feature (N×N average)
+		for dy in 0 ..< w.N {
+			sy0 := dy * sp.h / w.N
+			sy1 := min((dy + 1) * sp.h / w.N, sp.h)
+			for dx in 0 ..< w.N {
+				sx0 := dx * sp.w / w.N
+				sx1 := min((dx + 1) * sp.w / w.N, sp.w)
+				psum: u64 = 0
+				for sy in sy0 ..< sy1 {
+					for sx in sx0 ..< sx1 {
+						if w.channels == 3 {
+							poff := sy * sp.w * 3 + sx * 3
+							psum += u64((29 * u32(my_crop[poff+0]) + 150 * u32(my_crop[poff+1]) + 77 * u32(my_crop[poff+2])) >> 8)
+						} else {
+							psum += u64(my_crop[sy * sp.w + sx])
+						}
+					}
+				}
+				area := (sy1 - sy0) * (sx1 - sx0)
+				v := int(psum / u64(area)) if area > 0 else 0
+				q := v if w.G >= 8 else (v * w.maxv + 127) / 255
+				if q > w.maxv { q = w.maxv }
+				w.coarse_feat[dy * w.N + dx] = u8(q)
+			}
+		}
+
+		// Check coarse cache (read-only)
+		ch := fnv1a_64(w.coarse_feat)
+		found, pid := cache_lookup(w.ccache, w.ccache_cap, ch)
+		if found {
+			w.coarse_hit[i] = int(pid)
+			continue
+		}
+
+		// Compute full feature using pre-allocated buffers
+		crop_img := Img{w = sp.w, h = sp.h, stride = sp.w * w.channels, pixels = my_crop, channels = w.channels}
+		out_slice := w.out_feat_bufs[i * w.feat_len:]
+		feature_ch: int = 1 if w.channels == 3 else 0
+		img_compute_feature_multires(&crop_img, w.scales[:w.n_scales], w.G, w.has_edges, feature_ch, out_slice, &w.feat_bufs)
+	}
+}
+
 solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, color_channels, w, h: int,
                    db: ^FeatureDB, reg: ^Registry, pid_white, pid_black, max_block, hero_min: int,
                    manifest: []Inst, nout: ^int, tiles: []u8, ntiles: ^int, t: ^Timings) {
@@ -390,63 +487,135 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 
 			N := s.g_scales[0]
 			maxv := (1 << u32(db.G)) - 1
-			coarse_feat := make([]u8, N * N)
-			defer delete(coarse_feat)
 
-			for i in 0 ..< n_specs {
-				sp := s.specs[i]
-				my_crop := s.crop_bufs[:sp.w * sp.h * ch_mult]
+			// Parallel feature extraction using threads
+			num_cores := os.get_processor_core_count()
+			if num_cores <= 0 { num_cores = 1 }
+			num_feat_threads := min(num_cores, n_specs / 32)
 
-				if db.channels == 3 {
-					for yy in 0 ..< sp.h {
-						src_off := (sp.y + yy) * color_stride + sp.x * 3
-						dst_off := yy * sp.w * 3
-						copy(my_crop[dst_off:], color_pixels[src_off:src_off + sp.w * 3])
+			if num_feat_threads > 1 {
+				specs_per_thread := n_specs / num_feat_threads
+				feat_work := make([]Feat_Work, num_feat_threads)
+				feat_threads := make([]^thread.Thread, num_feat_threads)
+
+				for ti in 0 ..< num_feat_threads {
+					start := ti * specs_per_thread
+					end := start + specs_per_thread
+					if ti == num_feat_threads - 1 {
+						end = n_specs
 					}
-				} else {
-					for yy in 0 ..< sp.h {
-						src_off := (sp.y + yy) * w + sp.x
-						dst_off := yy * sp.w
-						copy(my_crop[dst_off:], gray[src_off:src_off + sp.w])
+
+					// Each thread gets its own crop buffer, coarse_feat buffer, and feature buffers
+					thread_crop := make([]u8, crop_sz)
+					thread_coarse := make([]u8, N * N)
+					thread_feat_bufs := feature_bufs_init(max_block, crop_sz)
+
+					feat_work[ti] = Feat_Work {
+						specs = s.specs[:n_specs],
+						gray = gray,
+						gray_width = w,
+						color_pixels = color_pixels,
+						color_stride = color_stride,
+						channels = db.channels,
+						feat_len = feat_len,
+						N = N,
+						G = db.G,
+						has_edges = db.has_edges,
+						maxv = maxv,
+						ch_mult = ch_mult,
+						spec_start = start,
+						spec_end = end,
+						db_data = db.data,
+						n_pages = db.n_pages,
+						coarse_len = coarse_len,
+						scales = s.g_scales[:s.g_n_scales],
+						n_scales = s.g_n_scales,
+						crop_buf = thread_crop,
+						coarse_feat = thread_coarse,
+						feat_bufs = thread_feat_bufs,
+						coarse_hit = s.coarse_hit,
+						out_feat_bufs = feat_bufs,
+						ccache = s.ccache,
+						ccache_cap = s.ccache_cap,
 					}
+
+					th := thread.create(feat_thread_proc)
+					th.data = &feat_work[ti]
+					thread.start(th)
+					feat_threads[ti] = th
 				}
 
-				for dy in 0 ..< N {
-					sy0 := dy * sp.h / N
-					sy1 := min((dy + 1) * sp.h / N, sp.h)
-					for dx in 0 ..< N {
-						sx0 := dx * sp.w / N
-						sx1 := min((dx + 1) * sp.w / N, sp.w)
-						psum: u64 = 0
-						for sy in sy0 ..< sy1 {
-							for sx in sx0 ..< sx1 {
-								if db.channels == 3 {
-									poff := sy * sp.w * 3 + sx * 3
-									psum += u64((29 * u32(my_crop[poff+0]) + 150 * u32(my_crop[poff+1]) + 77 * u32(my_crop[poff+2])) >> 8)
-								} else {
-									psum += u64(my_crop[sy * sp.w + sx])
+				// Wait for all threads
+				for ti in 0 ..< num_feat_threads {
+					thread.join(feat_threads[ti])
+					delete(feat_work[ti].crop_buf)
+					delete(feat_work[ti].coarse_feat)
+					feature_bufs_cleanup(&feat_work[ti].feat_bufs)
+				}
+
+				delete(feat_work)
+				delete(feat_threads)
+			} else {
+				// Single-threaded fallback
+				coarse_feat := make([]u8, N * N)
+				defer delete(coarse_feat)
+				local_feat_bufs := feature_bufs_init(max_block, crop_sz)
+				defer feature_bufs_cleanup(&local_feat_bufs)
+
+				for i in 0 ..< n_specs {
+					sp := s.specs[i]
+					my_crop := s.crop_bufs[:sp.w * sp.h * ch_mult]
+
+					if db.channels == 3 {
+						for yy in 0 ..< sp.h {
+							src_off := (sp.y + yy) * color_stride + sp.x * 3
+							dst_off := yy * sp.w * 3
+							copy(my_crop[dst_off:], color_pixels[src_off:src_off + sp.w * 3])
+						}
+					} else {
+						for yy in 0 ..< sp.h {
+							src_off := (sp.y + yy) * w + sp.x
+							copy(my_crop[yy * sp.w:], gray[src_off:src_off + sp.w])
+						}
+					}
+
+					for dy in 0 ..< N {
+						sy0 := dy * sp.h / N
+						sy1 := min((dy + 1) * sp.h / N, sp.h)
+						for dx in 0 ..< N {
+							sx0 := dx * sp.w / N
+							sx1 := min((dx + 1) * sp.w / N, sp.w)
+							psum: u64 = 0
+							for sy in sy0 ..< sy1 {
+								for sx in sx0 ..< sx1 {
+									if db.channels == 3 {
+										poff := sy * sp.w * 3 + sx * 3
+										psum += u64((29 * u32(my_crop[poff+0]) + 150 * u32(my_crop[poff+1]) + 77 * u32(my_crop[poff+2])) >> 8)
+									} else {
+										psum += u64(my_crop[sy * sp.w + sx])
+									}
 								}
 							}
+							area := (sy1 - sy0) * (sx1 - sx0)
+							v := int(psum / u64(area)) if area > 0 else 0
+							q := v if db.G >= 8 else (v * maxv + 127) / 255
+							if q > maxv { q = maxv }
+							coarse_feat[dy * N + dx] = u8(q)
 						}
-						area := (sy1 - sy0) * (sx1 - sx0)
-						v := int(psum / u64(area)) if area > 0 else 0
-						q := v if db.G >= 8 else (v * maxv + 127) / 255
-						if q > maxv { q = maxv }
-						coarse_feat[dy * N + dx] = u8(q)
 					}
-				}
 
-				ch := fnv1a_64(coarse_feat)
-				found, pid := cache_lookup(s.ccache, s.ccache_cap, ch)
-				if found {
-					s.coarse_hit[i] = int(pid)
-					continue
-				}
+					ch := fnv1a_64(coarse_feat)
+					found, pid := cache_lookup(s.ccache, s.ccache_cap, ch)
+					if found {
+						s.coarse_hit[i] = int(pid)
+						continue
+					}
 
-				crop_img := Img{w = sp.w, h = sp.h, stride = sp.w * db.channels, pixels = my_crop, channels = db.channels}
-				out_slice := feat_bufs[i * feat_len :]
-				feature_ch: int = 1 if db.channels == 3 else 0
-				img_compute_feature_multires(&crop_img, s.g_scales[:s.g_n_scales], db.G, db.has_edges, feature_ch, out_slice)
+					crop_img := Img{w = sp.w, h = sp.h, stride = sp.w * db.channels, pixels = my_crop, channels = db.channels}
+					out_slice := feat_bufs[i * feat_len:]
+					feature_ch: int = 1 if db.channels == 3 else 0
+					img_compute_feature_multires(&crop_img, s.g_scales[:s.g_n_scales], db.G, db.has_edges, feature_ch, out_slice, &local_feat_bufs)
+				}
 			}
 
 			for i in 0 ..< n_specs {
@@ -651,6 +820,6 @@ arrange_main :: proc() {
 
 	elapsed := time.duration_seconds(time.tick_since(start))
 	overall_fps := f64(frames_done) / max(elapsed, 0.001)
-	cli_progress_done(fmt.tprintf("arrange complete in %.2fs | %.2f fps | %d tiles",
-	                              elapsed, overall_fps, total_tiles))
+	cli_progress_done(fmt.tprintf("arrange complete in %.2fs | %.2f fps | %d tiles | feat=%.2fs match=%.2fs solve=%.2fs",
+	                              elapsed, overall_fps, total_tiles, t.feat, t.match, t.solve))
 }

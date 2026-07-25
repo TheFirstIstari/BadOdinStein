@@ -8,12 +8,14 @@ img_to_gray :: proc(src, dst: ^Img) {
 		return
 	}
 	for y in 0 ..< src.h {
+		src_row := y * src.stride
+		dst_row := y * dst.stride
 		for x in 0 ..< src.w {
-			so := y * src.stride + x * src.channels
-			b := i32(src.pixels[so+0])
-			g := i32(src.pixels[so+1])
-			r := i32(src.pixels[so+2])
-			dst.pixels[y*dst.stride+x] = u8((29*b + 150*g + 77*r + 128) >> 8)
+			off := src_row + x * 3
+			b := i32(src.pixels[off+0])
+			g := i32(src.pixels[off+1])
+			r := i32(src.pixels[off+2])
+			dst.pixels[dst_row+x] = u8((29*b + 150*g + 77*r + 128) >> 8)
 		}
 	}
 }
@@ -171,75 +173,105 @@ img_compute_feature :: proc(crop: ^Img, N, G, color: int, out: []u8) {
 	}
 }
 
-img_compute_feature_multires :: proc(crop: ^Img, scales: []int, G, has_edges, color: int, out: []u8) {
+// Pre-allocated buffers for img_compute_feature_multires
+Feature_Buffers :: struct {
+	gray_buf:    []u8,
+	edge_buf:    []u8,
+	color_buf:   []u8,
+	full_gray:   []u8,
+}
+
+feature_bufs_init :: proc(max_n, max_crop: int, allocator := context.allocator) -> Feature_Buffers {
+	return Feature_Buffers{
+		gray_buf = make([]u8, max_n * max_n, allocator),
+		edge_buf = make([]u8, max_n * max_n, allocator),
+		color_buf = make([]u8, max_n * max_n * 3, allocator),
+		full_gray = make([]u8, max_crop, allocator),
+	}
+}
+
+feature_bufs_cleanup :: proc(bufs: ^Feature_Buffers) {
+	delete(bufs.gray_buf)
+	delete(bufs.edge_buf)
+	delete(bufs.color_buf)
+	delete(bufs.full_gray)
+}
+
+img_compute_feature_multires :: proc(crop: ^Img, scales: []int, G, has_edges, color: int, out: []u8, bufs: ^Feature_Buffers = nil) {
 	pos := 0
 	maxv := (1 << u32(G)) - 1
 
-	max_n := 0
-	for s in scales {
-		if s > max_n {
-			max_n = s
+	// Use pre-allocated buffers if provided, otherwise allocate locally
+	local_bufs: Feature_Buffers
+	used_bufs: ^Feature_Buffers
+	if bufs != nil {
+		used_bufs = bufs
+	} else {
+		max_n := 0
+		for s in scales {
+			if s > max_n { max_n = s }
 		}
+		local_bufs = feature_bufs_init(max_n, crop.w * crop.h)
+		used_bufs = &local_bufs
+		defer feature_bufs_cleanup(used_bufs)
 	}
 
-	gray_buf := make([]u8, max_n*max_n, context.allocator)
-	defer delete(gray_buf)
-	edge_buf := make([]u8, max_n*max_n, context.allocator)
-	defer delete(edge_buf)
-	color_buf := make([]u8, max_n*max_n*3, context.allocator)
-	defer delete(color_buf)
-
-	full_gray_buf := make([]u8, crop.w*crop.h, context.allocator)
-	defer delete(full_gray_buf)
+	// Convert to gray once if needed (reuse for all scales)
+	has_gray := crop.channels == 3
+	if has_gray {
+		full_gray := Img{
+			w = crop.w,
+			h = crop.h,
+			stride = crop.w,
+			pixels = used_bufs.full_gray[:crop.w * crop.h],
+			channels = 1,
+		}
+		img_to_gray(crop, &full_gray)
+	}
 
 	for N in scales {
 		gray_img := Img{
 			w = N,
 			h = N,
 			stride = N,
-			pixels = gray_buf[:N*N],
+			pixels = used_bufs.gray_buf[:N*N],
 			channels = 1,
 		}
 
-		if crop.channels == 3 {
+		if has_gray {
 			full_gray := Img{
 				w = crop.w,
 				h = crop.h,
 				stride = crop.w,
-				pixels = full_gray_buf,
+				pixels = used_bufs.full_gray[:crop.w * crop.h],
 				channels = 1,
 			}
-			img_to_gray(crop, &full_gray)
 			img_resize_area(&full_gray, &gray_img, N, N)
 		} else {
 			img_resize_area(crop, &gray_img, N, N)
 		}
 
 		for i in 0 ..< N * N {
-			v := int(gray_buf[i])
+			v := int(used_bufs.gray_buf[i])
 			if G >= 8 {
 				out[pos+i] = u8(v)
 			} else {
 				q := (v * maxv + 127) / 255
-				if q > maxv {
-					q = maxv
-				}
+				if q > maxv { q = maxv }
 				out[pos+i] = u8(q)
 			}
 		}
 		pos += N * N
 
 		if has_edges != 0 {
-			img_sobel_magnitude(gray_buf[:N*N], N, N, edge_buf[:N*N])
+			img_sobel_magnitude(used_bufs.gray_buf[:N*N], N, N, used_bufs.edge_buf[:N*N])
 			for i in 0 ..< N * N {
-				v := int(edge_buf[i])
+				v := int(used_bufs.edge_buf[i])
 				if G >= 8 {
 					out[pos+i] = u8(v)
 				} else {
 					q := (v * maxv + 127) / 255
-					if q > maxv {
-						q = maxv
-					}
+					if q > maxv { q = maxv }
 					out[pos+i] = u8(q)
 				}
 			}
@@ -251,20 +283,18 @@ img_compute_feature_multires :: proc(crop: ^Img, scales: []int, G, has_edges, co
 				w = N,
 				h = N,
 				stride = N * 3,
-				pixels = color_buf[:N*N*3],
+				pixels = used_bufs.color_buf[:N*N*3],
 				channels = 3,
 			}
 			img_resize_area(crop, &color_img, N, N)
 			total := N * N * 3
 			for i in 0 ..< total {
-				v := int(color_buf[i])
+				v := int(used_bufs.color_buf[i])
 				if G >= 8 {
 					out[pos+i] = u8(v)
 				} else {
 					q := (v * maxv + 127) / 255
-					if q > maxv {
-						q = maxv
-					}
+					if q > maxv { q = maxv }
 					out[pos+i] = u8(q)
 				}
 			}

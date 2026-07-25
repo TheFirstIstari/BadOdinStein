@@ -6,6 +6,8 @@ import "core:strings"
 import "core:mem"
 import "core:math"
 import "core:time"
+import "core:thread"
+import "core:sync"
 
 MAX_INSTS :: 65536
 FRAME_QUEUE_SIZE :: 4
@@ -129,6 +131,106 @@ atlas_insert :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int, src_pixels: []u8, 
             tombstone_idx = idx
         }
         _ = probe
+    }
+}
+
+// ── Encode pipeline (producer-consumer) ──
+Frame_Slot :: struct {
+    pixels: []u8,
+    filled: bool,
+}
+
+Encode_Pipeline :: struct {
+    slots:          [FRAME_QUEUE_SIZE]Frame_Slot,
+    write_idx:      int,
+    read_idx:       int,
+    count:          int,
+    encoder:        ^VideoEncoder,
+    enc_width:      int,
+    enc_height:     int,
+    enc_channels:   int,
+    mutex:          sync.Mutex,
+    can_write:      sync.Cond,
+    can_read:       sync.Cond,
+    done:           bool,
+    frames_written: int,
+}
+
+pipeline_init :: proc(p: ^Encode_Pipeline, enc: ^VideoEncoder, width, height, channels: int) {
+    p.encoder = enc
+    p.enc_width = width
+    p.enc_height = height
+    p.enc_channels = channels
+    p.write_idx = 0
+    p.read_idx = 0
+    p.count = 0
+    p.done = false
+    p.frames_written = 0
+    // Mutex and Cond zero values are valid in Odin — no init needed
+    for i in 0 ..< FRAME_QUEUE_SIZE {
+        p.slots[i].pixels = make([]u8, width * height * channels)
+        p.slots[i].filled = false
+    }
+}
+
+pipeline_push :: proc(p: ^Encode_Pipeline, canvas: []u8) {
+    sync.mutex_lock(&p.mutex)
+    for p.count >= FRAME_QUEUE_SIZE {
+        sync.cond_wait(&p.can_write, &p.mutex)
+    }
+    slot := &p.slots[p.write_idx]
+    copy(slot.pixels, canvas)
+    slot.filled = true
+    p.write_idx = (p.write_idx + 1) % FRAME_QUEUE_SIZE
+    p.count += 1
+    sync.cond_signal(&p.can_read)
+    sync.mutex_unlock(&p.mutex)
+}
+
+encoder_thread_proc :: proc(t: ^thread.Thread) {
+    p := (^Encode_Pipeline)(t.data)
+    for {
+        sync.mutex_lock(&p.mutex)
+        for p.count == 0 && !p.done {
+            sync.cond_wait(&p.can_read, &p.mutex)
+        }
+        if p.count == 0 && p.done {
+            sync.mutex_unlock(&p.mutex)
+            break
+        }
+        slot := &p.slots[p.read_idx]
+        p.read_idx = (p.read_idx + 1) % FRAME_QUEUE_SIZE
+        p.count -= 1
+        sync.cond_signal(&p.can_write)
+        sync.mutex_unlock(&p.mutex)
+
+        // Encode outside the lock
+        enc_frame: Img
+        enc_frame.w = p.enc_width
+        enc_frame.h = p.enc_height
+        enc_frame.channels = p.enc_channels
+        enc_frame.stride = p.enc_width * p.enc_channels
+        enc_frame.pixels = slot.pixels
+        video_encoder_write_frame(p.encoder, &enc_frame)
+        slot.filled = false
+
+        sync.mutex_lock(&p.mutex)
+        p.frames_written += 1
+        sync.mutex_unlock(&p.mutex)
+    }
+}
+
+pipeline_close :: proc(p: ^Encode_Pipeline) {
+    sync.mutex_lock(&p.mutex)
+    p.done = true
+    sync.cond_broadcast(&p.can_read)
+    sync.mutex_unlock(&p.mutex)
+    // Wait for encoder thread to finish — caller joins the thread
+}
+
+pipeline_destroy :: proc(p: ^Encode_Pipeline) {
+    for i in 0 ..< FRAME_QUEUE_SIZE {
+        delete(p.slots[i].pixels)
     }
 }
 
@@ -345,6 +447,19 @@ render_main :: proc() {
     enc := video_encoder_open(output, width, height, int(fps_val), "prores_ks", 0)
     if enc == nil { cli_die("cannot open encoder: %s", output) }
     defer video_encoder_close(enc)
+
+    // Start encode pipeline (producer-consumer)
+    pipeline: Encode_Pipeline
+    pipeline_init(&pipeline, enc, width, height, channels)
+    defer pipeline_destroy(&pipeline)
+
+    enc_thread := thread.create(encoder_thread_proc)
+    enc_thread.data = rawptr(&pipeline)
+    thread.start(enc_thread)
+    defer {
+        pipeline_close(&pipeline)
+        thread.join(enc_thread)
+    }
     
     frames_done := 0
     start := time.tick_now()
@@ -471,15 +586,9 @@ render_main :: proc() {
         }
         
         frames_done += 1
-        
-        // Encode frame
-        enc_frame: Img
-        enc_frame.w = width
-        enc_frame.h = height
-        enc_frame.channels = channels
-        enc_frame.stride = width * channels
-        enc_frame.pixels = canvas
-        video_encoder_write_frame(enc, &enc_frame)
+
+        // Push frame to encode pipeline (non-blocking)
+        pipeline_push(&pipeline, canvas)
         
         if !g_cli.quiet && frames_done % 30 == 0 {
             elapsed := time.duration_seconds(time.tick_since(start))
