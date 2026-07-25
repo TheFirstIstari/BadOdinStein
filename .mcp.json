@@ -7,13 +7,12 @@
     },
     "github-mcp": {
       "type": "stdio",
-      "command": "docker",
-      "args": ["run", "-i", "--rm", "ghcr.io/github/github-mcp-server", "stdio"]
+      "command": "/Users/frobinson/dev/github-mcp-server/github-mcp-server",
+      "args": ["stdio"]
     },
     "codebase-memory": {
       "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "codebase-memory-mcp"]
+      "command": "/Users/frobinson/dev/codebase-memory-mcp/build/c/codebase-memory-mcp"
     }
   }
 }
