@@ -8,7 +8,7 @@ import "core:strconv"
 
 has_ext :: proc(path, ext: string) -> bool {
     if len(path) < len(ext) + 1 { return false }
-    return strings.has_suffix(strings.lower(path), strings.lower(ext))
+    return strings.has_suffix(path, ext)
 }
 
 is_pdf_file :: proc(p: string) -> bool { return has_ext(p, ".pdf") }

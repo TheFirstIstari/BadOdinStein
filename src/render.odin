@@ -310,7 +310,8 @@ render_main :: proc() {
     defer {
         for i in 0 ..< len(manifest_paths) {
             if loaded_insts[i] != nil { delete(loaded_insts[i]) }
-            delete(manifest_paths[i])
+            // NOTE: manifest_paths[i] strings are from fmt.tprintf (temporary allocator),
+            // so we must NOT delete them with the heap allocator.
         }
         delete(loaded_insts)
         delete(loaded_n)

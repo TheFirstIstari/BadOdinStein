@@ -34,8 +34,8 @@ print_arrange_help :: proc() {
         "  --features <file>      Feature database (default: features.bin)\n" +
         "  --registry <file>      Registry (default: registry.bin)\n" +
         "  --manifests <dir>      Manifest output directory (default: manifests_greedy)\n" +
-        "  --max-block-pct <N>   Maximum block size as % of frame (default: auto)\n" +
-        "  --hero-min-pct <N>    Minimum hero block size as % of frame (default: 192)\n" +
+        "  --max-block-pct <N>   Maximum block size as percentage of frame (default: auto)\n" +
+        "  --hero-min-pct <N>    Minimum hero block size as percentage of frame (default: 192)\n" +
         "  --max-frames <N>       Maximum frames to process (0 = all)\n" +
         "  --threads <N>          Thread count (0 = auto)\n" +
         "  --verbose, -v          Verbose output\n" +

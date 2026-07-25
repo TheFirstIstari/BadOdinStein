@@ -17,30 +17,31 @@ g_cli: CLI_Ctx
 
 // ── Option store (flat key=value pairs) ──
 OPT_MAX :: 128
-g_opts:  [OPT_MAX]struct {
-    name:  [64]u8,
-    value: [256]u8,
+Opt_Entry :: struct {
+    name:  string,
+    value: string,
 }
+g_opts:  [OPT_MAX]Opt_Entry
 g_nopts: int
 
 cli_store :: proc(name, value: string) {
 	for i in 0 ..< g_nopts {
-		if string(g_opts[i].name[:]) == name {
-			copy(g_opts[i].value[:], value)
+		if g_opts[i].name == name {
+			g_opts[i].value = strings.clone(value, context.allocator)
 			return
 		}
 	}
 	if g_nopts < OPT_MAX {
-		copy(g_opts[g_nopts].name[:], name)
-		copy(g_opts[g_nopts].value[:], value)
+		g_opts[g_nopts].name = strings.clone(name, context.allocator)
+		g_opts[g_nopts].value = strings.clone(value, context.allocator)
 		g_nopts += 1
 	}
 }
 
 cli_get :: proc(name, def: string) -> string {
 	for i in 0 ..< g_nopts {
-		if string(g_opts[i].name[:]) == name {
-			return strings.clone(cast(string)g_opts[i].value[:])
+		if g_opts[i].name == name {
+			return g_opts[i].value
 		}
 	}
 	return def
@@ -70,7 +71,7 @@ cli_opt_f64 :: proc(name: string, def: f64) -> f64 {
 
 cli_has :: proc(name: string) -> bool {
 	for i in 0 ..< g_nopts {
-		if string(g_opts[i].name[:]) == name {
+		if g_opts[i].name == name {
 			return true
 		}
 	}
@@ -119,7 +120,7 @@ cli_parse :: proc(args: []string) {
 cli_info :: proc(msg: string, args: ..any) {
 	if g_cli.quiet { return }
 	if g_cli.json_mode {
-		fmt.eprintfln("{\"level\":\"info\",\"message\":\"" + fmt.tprintf(msg, ..args) + "\"}")
+		fmt.eprintf("{\"level\":\"info\",\"message\":\"%s\"}", fmt.tprintf(msg, ..args))
 		return
 	}
 	fmt.eprint("\033[1;36m[info]\033[0m ")
@@ -129,7 +130,7 @@ cli_info :: proc(msg: string, args: ..any) {
 
 cli_warn :: proc(msg: string, args: ..any) {
 	if g_cli.json_mode {
-		fmt.eprintfln("{\"level\":\"warn\",\"message\":\"" + fmt.tprintf(msg, ..args) + "\"}")
+		fmt.eprintf("{\"level\":\"warn\",\"message\":\"%s\"}", fmt.tprintf(msg, ..args))
 		return
 	}
 	fmt.eprint("\033[1;33m[warn]\033[0m ")
@@ -139,7 +140,7 @@ cli_warn :: proc(msg: string, args: ..any) {
 
 cli_error :: proc(msg: string, args: ..any) {
 	if g_cli.json_mode {
-		fmt.eprintfln("{\"level\":\"error\",\"message\":\"" + fmt.tprintf(msg, ..args) + "\"}")
+		fmt.eprintf("{\"level\":\"error\",\"message\":\"%s\"}", fmt.tprintf(msg, ..args))
 		return
 	}
 	fmt.eprint("\033[1;31m[error]\033[0m ")
@@ -149,7 +150,7 @@ cli_error :: proc(msg: string, args: ..any) {
 
 cli_die :: proc(msg: string, args: ..any) -> ! {
 	if g_cli.json_mode {
-		fmt.eprintfln("{\"level\":\"fatal\",\"message\":\"" + fmt.tprintf(msg, ..args) + "\"}")
+		fmt.eprintf("{\"level\":\"fatal\",\"message\":\"%s\"}", fmt.tprintf(msg, ..args))
 	} else {
 		fmt.eprint("\033[1;31m[fatal]\033[0m ")
 		fmt.eprintf(msg, ..args)

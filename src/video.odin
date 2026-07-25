@@ -360,59 +360,59 @@ packet_set_stream_index :: proc(pkt: rawptr, v: c.int) {
 // ── Foreign procedures (libav*) ─────────────────────────────────────────────
 
 foreign libavformat {
-    avformat_network_init :: proc() -> c.int ---
-    avformat_open_input :: proc(ctxt: ^AVFormatContext, url: cstring, fmt: rawptr, opts: rawptr) -> c.int ---
-    avformat_find_stream_info :: proc(ctxt: AVFormatContext, opts: rawptr) -> c.int ---
-    av_read_frame :: proc(ctxt: AVFormatContext, pkt: AVPacket) -> c.int ---
-    avformat_close_input :: proc(ctxt: ^AVFormatContext) ---
-    avformat_alloc_output_context2 :: proc(ctxt: ^AVFormatContext, ofmt: rawptr, name: cstring, url: cstring) -> c.int ---
-    avformat_free_context :: proc(ctxt: AVFormatContext) ---
-    avformat_new_stream :: proc(ctxt: AVFormatContext, c: rawptr) -> rawptr ---
-    avformat_write_header :: proc(ctxt: AVFormatContext, opts: rawptr) -> c.int ---
-    av_interleaved_write_frame :: proc(ctxt: AVFormatContext, pkt: AVPacket) -> c.int ---
-    av_write_trailer :: proc(ctxt: AVFormatContext) ---
-    avio_open :: proc(pb: ^AVIOContext, url: cstring, flags: c.int) -> c.int ---
-    avio_closep :: proc(pb: ^AVIOContext) -> c.int ---
-    av_guess_format :: proc(short_name: cstring, filename: cstring, mime_type: cstring) -> rawptr ---
+    avformat_network_init :: proc "c" () -> c.int ---
+    avformat_open_input :: proc "c" (ctxt: ^^AVFormatContext, url: cstring, fmt: rawptr, opts: rawptr) -> c.int ---
+    avformat_find_stream_info :: proc "c" (ctxt: ^AVFormatContext, opts: rawptr) -> c.int ---
+    av_read_frame :: proc "c" (ctxt: ^AVFormatContext, pkt: ^AVPacket) -> c.int ---
+    avformat_close_input :: proc "c" (ctxt: ^^AVFormatContext) ---
+    avformat_alloc_output_context2 :: proc "c" (ctxt: ^^AVFormatContext, ofmt: rawptr, name: cstring, url: cstring) -> c.int ---
+    avformat_free_context :: proc "c" (ctxt: ^AVFormatContext) ---
+    avformat_new_stream :: proc "c" (ctxt: ^AVFormatContext, c: rawptr) -> ^AVStream ---
+    avformat_write_header :: proc "c" (ctxt: ^AVFormatContext, opts: rawptr) -> c.int ---
+    av_interleaved_write_frame :: proc "c" (ctxt: ^AVFormatContext, pkt: ^AVPacket) -> c.int ---
+    av_write_trailer :: proc "c" (ctxt: ^AVFormatContext) ---
+    avio_open :: proc "c" (pb: ^AVIOContext, url: cstring, flags: c.int) -> c.int ---
+    avio_closep :: proc "c" (pb: ^AVIOContext) -> c.int ---
+    av_guess_format :: proc "c" (short_name: cstring, filename: cstring, mime_type: cstring) -> rawptr ---
 }
 
 foreign libavcodec {
-    avcodec_find_decoder :: proc(id: c.int) -> rawptr ---
-    avcodec_find_encoder_by_name :: proc(name: cstring) -> rawptr ---
-    avcodec_find_encoder :: proc(id: c.int) -> rawptr ---
-    avcodec_alloc_context3 :: proc(codec: rawptr) -> AVCodecContext ---
-    avcodec_free_context :: proc(ctx: ^AVCodecContext) ---
-    avcodec_parameters_to_context :: proc(ctx: AVCodecContext, par: AVCodecParameters) -> c.int ---
-    avcodec_parameters_from_context :: proc(par: AVCodecParameters, ctx: AVCodecContext) -> c.int ---
-    avcodec_open2 :: proc(ctx: AVCodecContext, codec: rawptr, opts: rawptr) -> c.int ---
-    avcodec_send_packet :: proc(ctx: AVCodecContext, pkt: AVPacket) -> c.int ---
-    avcodec_receive_frame :: proc(ctx: AVCodecContext, frame: AVFrame) -> c.int ---
-    avcodec_send_frame :: proc(ctx: AVCodecContext, frame: AVFrame) -> c.int ---
-    avcodec_receive_packet :: proc(ctx: AVCodecContext, pkt: AVPacket) -> c.int ---
-    av_packet_alloc :: proc() -> AVPacket ---
-    av_packet_unref :: proc(pkt: AVPacket) ---
-    av_packet_free :: proc(pkt: ^AVPacket) ---
-    av_packet_rescale_ts :: proc(pkt: AVPacket, tb_src: AVRational, tb_dst: AVRational) ---
+    avcodec_find_decoder :: proc "c" (id: c.int) -> rawptr ---
+    avcodec_find_encoder_by_name :: proc "c" (name: cstring) -> rawptr ---
+    avcodec_find_encoder :: proc "c" (id: c.int) -> rawptr ---
+    avcodec_alloc_context3 :: proc "c" (codec: rawptr) -> ^AVCodecContext ---
+    avcodec_free_context :: proc "c" (ctx: ^^AVCodecContext) ---
+    avcodec_parameters_to_context :: proc "c" (ctx: ^AVCodecContext, par: rawptr) -> c.int ---
+    avcodec_parameters_from_context :: proc "c" (par: rawptr, ctx: ^AVCodecContext) -> c.int ---
+    avcodec_open2 :: proc "c" (ctx: ^AVCodecContext, codec: rawptr, opts: rawptr) -> c.int ---
+    avcodec_send_packet :: proc "c" (ctx: ^AVCodecContext, pkt: ^AVPacket) -> c.int ---
+    avcodec_receive_frame :: proc "c" (ctx: ^AVCodecContext, frame: ^AVFrame) -> c.int ---
+    avcodec_send_frame :: proc "c" (ctx: ^AVCodecContext, frame: ^AVFrame) -> c.int ---
+    avcodec_receive_packet :: proc "c" (ctx: ^AVCodecContext, pkt: ^AVPacket) -> c.int ---
+    av_packet_alloc :: proc "c" () -> ^AVPacket ---
+    av_packet_unref :: proc "c" (pkt: ^AVPacket) ---
+    av_packet_free :: proc "c" (pkt: ^^AVPacket) ---
+    av_packet_rescale_ts :: proc "c" (pkt: ^AVPacket, tb_src: AVRational, tb_dst: AVRational) ---
 }
 
 foreign libavutil {
-    av_frame_alloc :: proc() -> AVFrame ---
-    av_frame_free :: proc(frame: ^AVFrame) ---
-    av_frame_unref :: proc(frame: AVFrame) ---
-    av_frame_get_buffer :: proc(frame: AVFrame, align: c.int) -> c.int ---
-    av_get_pix_fmt :: proc(name: cstring) -> c.int ---
+    av_frame_alloc :: proc "c" () -> ^AVFrame ---
+    av_frame_free :: proc "c" (frame: ^^AVFrame) ---
+    av_frame_unref :: proc "c" (frame: AVFrame) ---
+    av_frame_get_buffer :: proc "c" (frame: AVFrame, align: c.int) -> c.int ---
+    av_get_pix_fmt :: proc "c" (name: cstring) -> c.int ---
 }
 
 foreign libswscale {
-    sws_getContext :: proc(
+    sws_getContext :: proc "c" (
         srcW, srcH, srcFmt: c.int,
         dstW, dstH, dstFmt: c.int,
         flags: c.int,
         srcFilter, dstFilter: rawptr,
         param: rawptr,
     ) -> rawptr ---
-    sws_freeContext :: proc(ctx: rawptr) ---
-    sws_scale :: proc(
+    sws_freeContext :: proc "c" (ctx: rawptr) ---
+    sws_scale :: proc "c" (
         ctx: rawptr,
         srcSlice: rawptr, srcStride: rawptr,
         srcSliceY: c.int, srcSliceH: c.int,
@@ -426,7 +426,7 @@ AV_PIX_FMT_BGR24           :: c.int(3)
 AV_PIX_FMT_RGB24           :: c.int(2)
 AV_PIX_FMT_GRAY8           :: c.int(8)
 AVMEDIA_TYPE_VIDEO         :: c.int(0)
-AVERROR_EAGAIN             :: c.int(-11)
+AVERROR_EAGAIN             :: c.int(-35)
 AVERROR_EOF                :: c.int(-541478725)
 AVIO_FLAG_WRITE            :: c.int(2)
 SWS_BILINEAR               :: c.int(2)
@@ -453,13 +453,13 @@ MAX_VIDEO_PLANES :: 8
 // ══════════════════════════════════════════════════════════════════════════════
 
 VideoDecoder :: struct {
-	fmt_ctx:        AVFormatContext,
+	fmt_ctx:        ^AVFormatContext,
 	video_stream:   int,
 	codec:          rawptr,
-	codec_ctx:      AVCodecContext,
+	codec_ctx:      ^AVCodecContext,
 	sws:            SwsContext,
-	frame:          AVFrame,
-	pkt:            AVPacket,
+	frame:          ^AVFrame,
+	pkt:            ^AVPacket,
 	width:          int,
 	height:         int,
 	fps:            f64,
@@ -640,7 +640,7 @@ video_decoder_close :: proc(dec: ^VideoDecoder) {
 // ══════════════════════════════════════════════════════════════════════════════
 
 video_image_load :: proc(path: string, out: ^Img) -> int {
-	fmt_ctx: AVFormatContext
+	fmt_ctx: ^AVFormatContext
 	cpath, cpath_buf := clone_to_cstr(path)
 	defer delete(cpath_buf)
 
@@ -763,14 +763,14 @@ video_image_load :: proc(path: string, out: ^Img) -> int {
 // ══════════════════════════════════════════════════════════════════════════════
 
 VideoEncoder :: struct {
-	fmt_ctx:        AVFormatContext,
-	stream:         AVStream,
+	fmt_ctx:        ^AVFormatContext,
+	stream:         ^AVStream,
 	codec:          rawptr,
-	codec_ctx:      AVCodecContext,
+	codec_ctx:      ^AVCodecContext,
 	sws:            SwsContext,
 	sws_gray8:      SwsContext,
-	frame:          AVFrame,
-	pkt:            AVPacket,
+	frame:          ^AVFrame,
+	pkt:            ^AVPacket,
 	width:          int,
 	height:         int,
 	dst_pix_fmt:    c.int,
@@ -798,7 +798,7 @@ video_encoder_open :: proc(
 		delete(ccodec_buf)
 	}
 	if ofmt == nil {
-		ofmt = av_guess_format(cstring("mp4"), nil, nil)
+		ofmt = av_guess_format(cstring("mov"), nil, nil)
 	}
 	if ofmt == nil {
 		free(enc)
@@ -1032,6 +1032,10 @@ video_encoder_close :: proc(enc: ^VideoEncoder) {
 		av_packet_unref(enc.pkt)
 	}
 
+	video_encoder_cleanup(enc)
+}
+
+video_encoder_cleanup :: proc(enc: ^VideoEncoder) {
 	av_write_trailer(enc.fmt_ctx)
 	if !enc.no_file {
 		avio_closep(fmtc_pb_ptr(enc.fmt_ctx))
@@ -1040,7 +1044,6 @@ video_encoder_close :: proc(enc: ^VideoEncoder) {
 	sws_freeContext(enc.sws_gray8)
 	av_frame_free(&enc.frame)
 	av_packet_free(&enc.pkt)
-	avcodec_free_context(&enc.codec_ctx)
 	avformat_free_context(enc.fmt_ctx)
 	free(enc)
 }
@@ -1059,7 +1062,7 @@ VideoInfo :: struct {
 }
 
 video_probe :: proc(path: string) -> (info: VideoInfo, ok: bool) {
-	fmt_ctx: AVFormatContext
+	fmt_ctx: ^AVFormatContext
 	cpath, cpath_buf := clone_to_cstr(path)
 	defer delete(cpath_buf)
 
