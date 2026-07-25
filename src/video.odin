@@ -408,6 +408,8 @@ foreign libswscale {
         srcW, srcH, srcFmt: c.int,
         dstW, dstH, dstFmt: c.int,
         flags: c.int,
+        srcFilter, dstFilter: rawptr,
+        param: rawptr,
     ) -> rawptr ---
     sws_freeContext :: proc(ctx: rawptr) ---
     sws_scale :: proc(
@@ -544,6 +546,7 @@ video_decoder_open :: proc(path: string) -> ^VideoDecoder {
 		c.int(dec.width), c.int(dec.height), codecctx_pix_fmt(dec.codec_ctx),
 		c.int(dec.width), c.int(dec.height), AV_PIX_FMT_BGR24,
 		SWS_BILINEAR,
+		nil, nil, nil,
 	)
 	if dec.sws == nil {
 		avcodec_free_context(&dec.codec_ctx)
@@ -688,6 +691,7 @@ video_image_load :: proc(path: string, out: ^Img) -> int {
 		codecctx_width(codec_ctx), codecctx_height(codec_ctx), codecctx_pix_fmt(codec_ctx),
 		codecctx_width(codec_ctx), codecctx_height(codec_ctx), AV_PIX_FMT_BGR24,
 		SWS_BILINEAR,
+		nil, nil, nil,
 	)
 	if sws == nil {
 		avcodec_free_context(&codec_ctx)
@@ -911,11 +915,13 @@ video_encoder_open :: proc(
 		c.int(width), c.int(height), AV_PIX_FMT_BGR24,
 		c.int(width), c.int(height), enc.dst_pix_fmt,
 		SWS_BILINEAR,
+		nil, nil, nil,
 	)
 	enc.sws_gray8 = sws_getContext(
 		c.int(width), c.int(height), AV_PIX_FMT_GRAY8,
 		c.int(width), c.int(height), enc.dst_pix_fmt,
 		SWS_BILINEAR,
+		nil, nil, nil,
 	)
 	enc.frame = av_frame_alloc()
 	if enc.sws == nil || enc.sws_gray8 == nil || enc.frame == nil {
