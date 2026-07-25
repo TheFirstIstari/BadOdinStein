@@ -21,8 +21,8 @@ system_detect :: proc() -> SystemConfig {
         if mem_val, ok := strconv.parse_u64(strings.trim_space(string(stdout))); ok && mem_val > 0 {
             r.total_memory_bytes = mem_val
         }
-        delete(stdout)
     }
+    delete(stdout)
 
     r.cache_budget_bytes = r.total_memory_bytes / 4
     r.cache_enabled = true

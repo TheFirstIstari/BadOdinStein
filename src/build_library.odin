@@ -8,7 +8,7 @@ import "core:strconv"
 
 has_ext :: proc(path, ext: string) -> bool {
     if len(path) < len(ext) + 1 { return false }
-    return strings.has_suffix(path, ext)
+    return strings.has_suffix(strings.lower(path), strings.lower(ext))
 }
 
 is_pdf_file :: proc(p: string) -> bool { return has_ext(p, ".pdf") }
@@ -20,15 +20,21 @@ is_img_file :: proc(p: string) -> bool {
 Feat_Buf :: struct {
     data: []u8,
     n:    int,
+    cap:  int,
 }
 
 feat_push :: proc(fb: ^Feat_Buf, feat: []u8) {
-    old_len := len(fb.data)
-    new_data := make([]u8, old_len + len(feat))
-    if old_len > 0 { copy(new_data, fb.data); delete(fb.data) }
-    copy(new_data[old_len:], feat)
-    fb.data = new_data
-    fb.n += 1
+    needed := fb.n + len(feat)
+    if needed > fb.cap {
+        new_cap := max(fb.cap * 2, needed)
+        new_data := make([]u8, new_cap)
+        if fb.n > 0 { copy(new_data, fb.data) }
+        if fb.cap > 0 { delete(fb.data) }
+        fb.data = new_data
+        fb.cap = new_cap
+    }
+    copy(fb.data[fb.n:], feat)
+    fb.n += len(feat)
 }
 
 write_features :: proc(path: string, fb: ^Feat_Buf, nreg, feat_len, G, n_scales: int, scales: []int, has_edges, channels: int) {
@@ -68,11 +74,11 @@ write_registry :: proc(path: string, paths: []string, page_idxs: []int, nreg: in
     
     for i in 0 ..< nreg {
         entry_buf := make([]u8, 8 + len(paths[i]))
-        defer delete(entry_buf)
         (^i32)(&entry_buf[0])^ = i32(page_idxs[i])
         (^u32)(&entry_buf[4])^ = u32(len(paths[i]))
         copy(entry_buf[8:], paths[i])
         os.write(f, entry_buf)
+        delete(entry_buf)
     }
 }
 
@@ -93,7 +99,7 @@ build_main :: proc() {
     feat_out := cli_opt_str("out", "features.bin")
     reg_out := "registry.bin"
     
-    feat_scales := [3]int{32, 64, 128}
+    feat_scales := [16]int{32, 64, 128, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0}
     n_feat_scales := 3
     
     if cli_has("scales") {

@@ -34,12 +34,13 @@ print_arrange_help :: proc() {
         "  --features <file>      Feature database (default: features.bin)\n" +
         "  --registry <file>      Registry (default: registry.bin)\n" +
         "  --manifests <dir>      Manifest output directory (default: manifests_greedy)\n" +
-        "  --max-block <N>        Maximum block size in pixels (default: auto)\n" +
-        "  --hero-min <N>         Minimum hero block size (default: 192)\n" +
+        "  --max-block-pct <N>   Maximum block size as % of frame (default: auto)\n" +
+        "  --hero-min-pct <N>    Minimum hero block size as % of frame (default: 192)\n" +
         "  --max-frames <N>       Maximum frames to process (0 = all)\n" +
         "  --threads <N>          Thread count (0 = auto)\n" +
         "  --verbose, -v          Verbose output\n" +
-        "  --quiet, -q            Suppress non-error output\n")
+        "  --quiet, -q            Suppress non-error output\n" +
+        "  --json                 Machine-readable JSON output\n")
 }
 
 print_render_help :: proc() {
@@ -53,14 +54,16 @@ print_render_help :: proc() {
         "  --manifests <dir>      Manifest directory (default: manifests_greedy)\n" +
         "  --registry <file>      Registry (default: registry.bin)\n" +
         "  --output <file>        Output video (default: output.mov)\n" +
-        "  --width <N>            Output width (auto-detect from manifest)\n" +
-        "  --height <N>           Output height (auto-detect from manifest)\n" +
-        "  --fps <N>              Output FPS (auto-detect from sidecar)\n" +
+        "  --width <N>            Output width (overrides preset)\n" +
+        "  --height <N>           Output height (overrides preset)\n" +
+        "  --fps <N>              Output FPS (overrides preset)\n" +
+        "  --preset <name>        Resolution preset: 8k, 4k, 1080p, 720p\n" +
         "  --channels <N>         1=grayscale, 3=color (default: 1)\n" +
         "  --max-frames <N>       Maximum frames to render (0 = all)\n" +
         "  --threads <N>          Thread count (0 = auto)\n" +
         "  --verbose, -v          Verbose output\n" +
-        "  --quiet, -q            Suppress non-error output\n")
+        "  --quiet, -q            Suppress non-error output\n" +
+        "  --json                 Machine-readable JSON output\n")
 }
 
 print_build_help :: proc() {
@@ -78,7 +81,8 @@ print_build_help :: proc() {
         "  --out <file>           Output features file (default: features.bin)\n" +
         "  --threads <N>          Thread count (0 = auto)\n" +
         "  --verbose, -v          Verbose output\n" +
-        "  --quiet, -q            Suppress non-error output\n")
+        "  --quiet, -q            Suppress non-error output\n" +
+        "  --json                 Machine-readable JSON output\n")
 }
 
 main :: proc() {

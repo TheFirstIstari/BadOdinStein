@@ -388,6 +388,11 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 
 			tf := time.tick_now()
 
+			N := s.g_scales[0]
+			maxv := (1 << u32(db.G)) - 1
+			coarse_feat := make([]u8, N * N)
+			defer delete(coarse_feat)
+
 			for i in 0 ..< n_specs {
 				sp := s.specs[i]
 				my_crop := s.crop_bufs[:sp.w * sp.h * ch_mult]
@@ -405,11 +410,6 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 						copy(my_crop[dst_off:], gray[src_off:src_off + sp.w])
 					}
 				}
-
-				N := s.g_scales[0]
-				maxv := (1 << u32(db.G)) - 1
-				coarse_feat := make([]u8, N * N)
-				defer delete(coarse_feat)
 
 				for dy in 0 ..< N {
 					sy0 := dy * sp.h / N

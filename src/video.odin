@@ -41,7 +41,12 @@ AVRational :: struct { num: c.int, den: c.int }
 // Pure-Odin FFmpeg struct field accessors (pointer arithmetic)
 //
 // Offsets derived from FFmpeg 8.1.2 headers on macOS ARM64.
-// All offsets follow the C ABI layout (default Odin struct layout = C ABI).
+// ALL OFFSETS FOLLOW THE C ABI LAYOUT (default Odin struct layout = C ABI).
+//
+// WARNING: These offsets are version-specific and platform-specific. A different
+// FFmpeg version or a different platform (Linux x86_64, ARM64 Linux, etc.) will
+// cause SILENT MEMORY CORRUPTION — not a crash. Do not change the FFmpeg version
+// or build platform without updating these offsets.
 // ══════════════════════════════════════════════════════════════════════════════
 
 // -- AVFormatContext offsets ------------------------------------------------

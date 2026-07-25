@@ -119,42 +119,42 @@ cli_parse :: proc(args: []string) {
 cli_info :: proc(msg: string, args: ..any) {
 	if g_cli.quiet { return }
 	if g_cli.json_mode {
-		fmt.eprintf("[info] ")
-	} else {
-		fmt.eprint("\033[1;36m[info]\033[0m ")
+		fmt.eprintfln("{\"level\":\"info\",\"message\":\"" + fmt.tprintf(msg, ..args) + "\"}")
+		return
 	}
+	fmt.eprint("\033[1;36m[info]\033[0m ")
 	fmt.eprintf(msg, ..args)
 	fmt.eprintf("\n")
 }
 
 cli_warn :: proc(msg: string, args: ..any) {
 	if g_cli.json_mode {
-		fmt.eprintf("[warn] ")
-	} else {
-		fmt.eprint("\033[1;33m[warn]\033[0m ")
+		fmt.eprintfln("{\"level\":\"warn\",\"message\":\"" + fmt.tprintf(msg, ..args) + "\"}")
+		return
 	}
+	fmt.eprint("\033[1;33m[warn]\033[0m ")
 	fmt.eprintf(msg, ..args)
 	fmt.eprintf("\n")
 }
 
 cli_error :: proc(msg: string, args: ..any) {
 	if g_cli.json_mode {
-		fmt.eprintf("[error] ")
-	} else {
-		fmt.eprint("\033[1;31m[error]\033[0m ")
+		fmt.eprintfln("{\"level\":\"error\",\"message\":\"" + fmt.tprintf(msg, ..args) + "\"}")
+		return
 	}
+	fmt.eprint("\033[1;31m[error]\033[0m ")
 	fmt.eprintf(msg, ..args)
 	fmt.eprintf("\n")
 }
 
 cli_die :: proc(msg: string, args: ..any) -> ! {
 	if g_cli.json_mode {
-		fmt.eprintf("[fatal] ")
+		fmt.eprintfln("{\"level\":\"fatal\",\"message\":\"" + fmt.tprintf(msg, ..args) + "\"}")
 	} else {
 		fmt.eprint("\033[1;31m[fatal]\033[0m ")
+		fmt.eprintf(msg, ..args)
+		fmt.eprintf("\n")
 	}
-	fmt.eprintf(msg, ..args)
-	fmt.eprintf("\n")
 	os.exit(1)
 }
 

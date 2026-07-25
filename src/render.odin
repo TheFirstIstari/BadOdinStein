@@ -208,6 +208,18 @@ render_main :: proc() {
     sys := system_detect()
     if g_cli.threads > 0 { sys.num_threads = g_cli.threads }
     
+    // Apply preset
+    preset := cli_opt_str("preset", "")
+    if preset == "8k" {
+        width = 7680; height = 4320; fps_val = 60.0
+    } else if preset == "4k" {
+        width = 3840; height = 2160; fps_val = 60.0
+    } else if preset == "1080p" {
+        width = 1920; height = 1080; fps_val = 30.0
+    } else if preset == "720p" {
+        width = 1280; height = 720; fps_val = 30.0
+    }
+    
     cli_info("system: %d cores | %d MB RAM | %d threads",
              sys.cpu_cores, sys.total_memory_bytes / (1024 * 1024), sys.num_threads)
     
