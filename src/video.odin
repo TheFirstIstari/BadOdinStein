@@ -993,8 +993,8 @@ video_encoder_write_frame :: proc(enc: ^VideoEncoder, img: ^Img) {
 	}
 
 	ret := avcodec_send_frame(enc.codec_ctx, enc.frame)
-	frame_set_pts(enc.frame, frame_pts(enc.frame) + 1)
 	if ret < 0 { return }
+	frame_set_pts(enc.frame, frame_pts(enc.frame) + 1)
 
 	for {
 		ret = avcodec_receive_packet(enc.codec_ctx, enc.pkt)
