@@ -11,6 +11,19 @@ CLI_Ctx :: struct {
 	quiet:      bool,
 	json_mode:  bool,
 	threads:    int,  // 0 = auto
+	// Cached parsed CLI values (avoid re-parsing strings per access)
+	_threads:       int,
+	_threads_valid: bool,
+	_width:         int,
+	_width_valid:   bool,
+	_height:        int,
+	_height_valid:  bool,
+	_fps:           f64,
+	_fps_valid:     bool,
+	_max_frames:    int,
+	_max_frames_valid: bool,
+	_channels:      int,
+	_channels_valid: bool,
 }
 
 g_cli: CLI_Ctx
@@ -27,7 +40,11 @@ g_nopts: int
 cli_store :: proc(name, value: string) {
 	for i in 0 ..< g_nopts {
 		if g_opts[i].name == name {
+			if len(g_opts[i].value) > 0 {
+				delete(g_opts[i].value)
+			}
 			g_opts[i].value = strings.clone(value, context.allocator)
+			_cli_invalidate(&g_cli, name)
 			return
 		}
 	}
@@ -35,6 +52,17 @@ cli_store :: proc(name, value: string) {
 		g_opts[g_nopts].name = strings.clone(name, context.allocator)
 		g_opts[g_nopts].value = strings.clone(value, context.allocator)
 		g_nopts += 1
+	}
+}
+
+_cli_invalidate :: proc(cli: ^CLI_Ctx, name: string) {
+	switch name {
+	case "threads":  cli._threads_valid = false
+	case "width":    cli._width_valid = false
+	case "height":   cli._height_valid = false
+	case "fps":      cli._fps_valid = false
+	case "max-frames": cli._max_frames_valid = false
+	case "channels": cli._channels_valid = false
 	}
 }
 
@@ -52,10 +80,29 @@ cli_opt_str :: proc(name, def: string) -> string {
 }
 
 cli_opt_int :: proc(name: string, def: int) -> int {
+	cached := false
 	v := cli_get(name, "")
 	if len(v) > 0 {
 		result, ok := strconv.parse_int(v)
-		if ok { return result }
+		if ok {
+			// Cache the result
+			switch name {
+			case "threads":  g_cli._threads = result;  g_cli._threads_valid = true
+			case "width":    g_cli._width = result;    g_cli._width_valid = true
+			case "height":   g_cli._height = result;   g_cli._height_valid = true
+			case "max-frames": g_cli._max_frames = result; g_cli._max_frames_valid = true
+			case "channels": g_cli._channels = result; g_cli._channels_valid = true
+			}
+			return result
+		}
+	}
+	// Fall through: return cached value or default
+	switch name {
+	case "threads":  if g_cli._threads_valid { return g_cli._threads }
+	case "width":    if g_cli._width_valid { return g_cli._width }
+	case "height":   if g_cli._height_valid { return g_cli._height }
+	case "max-frames": if g_cli._max_frames_valid { return g_cli._max_frames }
+	case "channels": if g_cli._channels_valid { return g_cli._channels }
 	}
 	return def
 }
@@ -64,7 +111,16 @@ cli_opt_f64 :: proc(name: string, def: f64) -> f64 {
 	v := cli_get(name, "")
 	if len(v) > 0 {
 		result, ok := strconv.parse_f64(v)
-		if ok { return result }
+		if ok {
+			if name == "fps" {
+				g_cli._fps = result
+				g_cli._fps_valid = true
+			}
+			return result
+		}
+	}
+	if name == "fps" && g_cli._fps_valid {
+		return g_cli._fps
 	}
 	return def
 }

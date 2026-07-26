@@ -395,9 +395,10 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 
 	for cy in 0 ..< gh {
 		y := cy * CELL_SIZE
+		row := s.visited[cy * gw:]
 		for cx in 0 ..< gw {
 			x := cx * CELL_SIZE
-			if s.visited[cy * gw + cx] != 0 { continue }
+			if row[cx] != 0 { continue }
 
 			cell_color := 1 if gray[y * w + x] > 127 else 0
 			mcw, mch := 1, 1
@@ -425,8 +426,9 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 
 			for cy + mch + 1 <= gh && mch + 1 <= max_cells {
 				any_visited := false
+				next_row_off := (cy + mch) * gw
 				for xx in cx ..< cx + mcw {
-					if s.visited[(cy + mch) * gw + xx] != 0 {
+					if s.visited[next_row_off + xx] != 0 {
 						any_visited = true
 						break
 					}
@@ -450,8 +452,9 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 			if y + mh > h { mh = h - y }
 
 			for ccy in cy ..< cy + mch {
+				base := ccy * gw
 				for ccx in cx ..< cx + mcw {
-					s.visited[ccy * gw + ccx] = 1
+					s.visited[base + ccx] = 1
 				}
 			}
 
