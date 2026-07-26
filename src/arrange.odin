@@ -124,6 +124,34 @@ arrange_cleanup :: proc(s: ^Arrange_State) {
 	delete(s.results)
 }
 
+// ── Shared coarse average (N×N grid) ──────────────────────────────
+coarse_average :: proc(crop: []u8, sw, sh, N, channels, G, maxv: int, coarse_out: []u8) {
+	for dy in 0 ..< N {
+		sy0 := dy * sh / N
+		sy1 := min((dy + 1) * sh / N, sh)
+		for dx in 0 ..< N {
+			sx0 := dx * sw / N
+			sx1 := min((dx + 1) * sw / N, sw)
+			psum: u64 = 0
+			for sy in sy0 ..< sy1 {
+				for sx in sx0 ..< sx1 {
+					if channels == 3 {
+						poff := sy * sw * 3 + sx * 3
+						psum += u64((29 * u32(crop[poff+0]) + 150 * u32(crop[poff+1]) + 77 * u32(crop[poff+2])) >> 8)
+					} else {
+						psum += u64(crop[sy * sw + sx])
+					}
+				}
+			}
+			area := (sy1 - sy0) * (sx1 - sx0)
+			v := int(psum / u64(area)) if area > 0 else 0
+			q := v if G >= 8 else (v * maxv + 127) / 255
+			if q > maxv { q = maxv }
+			coarse_out[dy * N + dx] = u8(q)
+		}
+	}
+}
+
 load_features :: proc(path: string, db: ^FeatureDB) -> int {
 	data, err := os.read_entire_file_from_path(path, context.allocator)
 	if err != nil { return -1 }
@@ -299,30 +327,7 @@ feat_thread_proc :: proc(t: ^thread.Thread) {
 		}
 
 		// Compute coarse feature (N×N average)
-		for dy in 0 ..< w.N {
-			sy0 := dy * sp.h / w.N
-			sy1 := min((dy + 1) * sp.h / w.N, sp.h)
-			for dx in 0 ..< w.N {
-				sx0 := dx * sp.w / w.N
-				sx1 := min((dx + 1) * sp.w / w.N, sp.w)
-				psum: u64 = 0
-				for sy in sy0 ..< sy1 {
-					for sx in sx0 ..< sx1 {
-						if w.channels == 3 {
-							poff := sy * sp.w * 3 + sx * 3
-							psum += u64((29 * u32(my_crop[poff+0]) + 150 * u32(my_crop[poff+1]) + 77 * u32(my_crop[poff+2])) >> 8)
-						} else {
-							psum += u64(my_crop[sy * sp.w + sx])
-						}
-					}
-				}
-				area := (sy1 - sy0) * (sx1 - sx0)
-				v := int(psum / u64(area)) if area > 0 else 0
-				q := v if w.G >= 8 else (v * w.maxv + 127) / 255
-				if q > w.maxv { q = w.maxv }
-				w.coarse_feat[dy * w.N + dx] = u8(q)
-			}
-		}
+		coarse_average(my_crop, sp.w, sp.h, w.N, w.channels, w.G, w.maxv, w.coarse_feat)
 
 		// Check coarse cache (read-only)
 		ch := fnv1a_64(w.coarse_feat)
@@ -579,30 +584,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 						}
 					}
 
-					for dy in 0 ..< N {
-						sy0 := dy * sp.h / N
-						sy1 := min((dy + 1) * sp.h / N, sp.h)
-						for dx in 0 ..< N {
-							sx0 := dx * sp.w / N
-							sx1 := min((dx + 1) * sp.w / N, sp.w)
-							psum: u64 = 0
-							for sy in sy0 ..< sy1 {
-								for sx in sx0 ..< sx1 {
-									if db.channels == 3 {
-										poff := sy * sp.w * 3 + sx * 3
-										psum += u64((29 * u32(my_crop[poff+0]) + 150 * u32(my_crop[poff+1]) + 77 * u32(my_crop[poff+2])) >> 8)
-									} else {
-										psum += u64(my_crop[sy * sp.w + sx])
-									}
-								}
-							}
-							area := (sy1 - sy0) * (sx1 - sx0)
-							v := int(psum / u64(area)) if area > 0 else 0
-							q := v if db.G >= 8 else (v * maxv + 127) / 255
-							if q > maxv { q = maxv }
-							coarse_feat[dy * N + dx] = u8(q)
-						}
-					}
+					coarse_average(my_crop, sp.w, sp.h, N, db.channels, db.G, maxv, coarse_feat)
 
 					ch := fnv1a_64(coarse_feat)
 					found, pid := cache_lookup(s.ccache, s.ccache_cap, ch)
