@@ -152,6 +152,21 @@ coarse_average :: proc(crop: []u8, sw, sh, N, channels, G, maxv: int, coarse_out
 	}
 }
 
+crop_copy_color :: proc(my_crop: []u8, color_pixels: []u8, color_stride: int, sp_x, sp_y, sp_w, sp_h: int) {
+	for yy in 0 ..< sp_h {
+		src_off := (sp_y + yy) * color_stride + sp_x * 3
+		dst_off := yy * sp_w * 3
+		copy(my_crop[dst_off:], color_pixels[src_off:src_off + sp_w * 3])
+	}
+}
+
+crop_copy_gray :: proc(my_crop: []u8, gray: []u8, gray_width, sp_x, sp_y, sp_w, sp_h: int) {
+	for yy in 0 ..< sp_h {
+		src_off := (sp_y + yy) * gray_width + sp_x
+		copy(my_crop[yy * sp_w:], gray[src_off:src_off + sp_w])
+	}
+}
+
 load_features :: proc(path: string, db: ^FeatureDB) -> int {
 	data, err := os.read_entire_file_from_path(path, context.allocator)
 	if err != nil { return -1 }
@@ -314,16 +329,9 @@ feat_thread_proc :: proc(t: ^thread.Thread) {
 		my_crop := w.crop_buf[:sp.w * sp.h * w.ch_mult]
 
 		if w.channels == 3 {
-			for yy in 0 ..< sp.h {
-				src_off := (sp.y + yy) * w.color_stride + sp.x * 3
-				dst_off := yy * sp.w * 3
-				copy(my_crop[dst_off:], w.color_pixels[src_off:src_off + sp.w * 3])
-			}
+			crop_copy_color(my_crop, w.color_pixels, w.color_stride, sp.x, sp.y, sp.w, sp.h)
 		} else {
-			for yy in 0 ..< sp.h {
-				src_off := (sp.y + yy) * w.gray_width + sp.x
-				copy(my_crop[yy * sp.w:], w.gray[src_off:src_off + sp.w])
-			}
+			crop_copy_gray(my_crop, w.gray, w.gray_width, sp.x, sp.y, sp.w, sp.h)
 		}
 
 		// Compute coarse feature (N×N average)
@@ -571,16 +579,9 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 					my_crop := s.crop_bufs[:sp.w * sp.h * ch_mult]
 
 					if db.channels == 3 {
-						for yy in 0 ..< sp.h {
-							src_off := (sp.y + yy) * color_stride + sp.x * 3
-							dst_off := yy * sp.w * 3
-							copy(my_crop[dst_off:], color_pixels[src_off:src_off + sp.w * 3])
-						}
+						crop_copy_color(my_crop, color_pixels, color_stride, sp.x, sp.y, sp.w, sp.h)
 					} else {
-						for yy in 0 ..< sp.h {
-							src_off := (sp.y + yy) * w + sp.x
-							copy(my_crop[yy * sp.w:], gray[src_off:src_off + sp.w])
-						}
+						crop_copy_gray(my_crop, gray, w, sp.x, sp.y, sp.w, sp.h)
 					}
 
 					coarse_average(my_crop, sp.w, sp.h, N, db.channels, db.G, maxv, coarse_feat)
