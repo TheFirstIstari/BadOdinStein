@@ -606,12 +606,16 @@ video_decoder_read_frame :: proc(dec: ^VideoDecoder, out: ^Img) -> bool {
 			src_data[0] = frame_data(dec.frame, 0)
 			src_linesize[0] = frame_linesize(dec.frame, 0)
 
-			sws_scale(
+			scale_ret := sws_scale(
 				dec.sws,
 				&src_data, &src_linesize,
 				0, frame_height(dec.frame),
 				&dst_slices, &dst_stride,
 			)
+			if scale_ret < 0 {
+				av_frame_unref(dec.frame)
+				continue
+			}
 
 			out.w, out.h = w, h
 			out.channels = 3
@@ -737,8 +741,17 @@ video_image_load :: proc(path: string, out: ^Img) -> int {
 		src_data[0] = frame_data(frame, 0)
 		src_linesize[0] = frame_linesize(frame, 0)
 
-		sws_scale(sws, &src_data, &src_linesize,
+		scale_ret := sws_scale(sws, &src_data, &src_linesize,
 			0, frame_height(frame), &dst_slices, &dst_stride)
+		if scale_ret < 0 {
+			delete(pixels)
+			av_frame_free(&frame)
+			av_packet_free(&pkt)
+			sws_freeContext(sws)
+			avcodec_free_context(&codec_ctx)
+			avformat_close_input(&fmt_ctx)
+			return -1
+		}
 
 		out.w, out.h = w, h
 		out.channels = 3
@@ -969,12 +982,14 @@ video_encoder_write_frame :: proc(enc: ^VideoEncoder, img: ^Img) {
 		dst_linesize: [MAX_VIDEO_PLANES]c.int
 		dst_data[0] = frame_data(enc.frame, 0)
 		dst_linesize[0] = frame_linesize(enc.frame, 0)
-		sws_scale(
+		if sws_scale(
 			enc.sws_gray8,
 			&src_slices, &src_stride,
 			0, c.int(img.h),
 			&dst_data, &dst_linesize,
-		)
+		) < 0 {
+			return
+		}
 	} else if img.channels == 3 {
 		src_slices[0] = raw_data(img.pixels)
 		src_stride = c.int(img.stride)
@@ -982,12 +997,14 @@ video_encoder_write_frame :: proc(enc: ^VideoEncoder, img: ^Img) {
 		dst_linesize: [MAX_VIDEO_PLANES]c.int
 		dst_data[0] = frame_data(enc.frame, 0)
 		dst_linesize[0] = frame_linesize(enc.frame, 0)
-		sws_scale(
+		if sws_scale(
 			enc.sws,
 			&src_slices, &src_stride,
 			0, c.int(img.h),
 			&dst_data, &dst_linesize,
-		)
+		) < 0 {
+			return
+		}
 	} else {
 		return
 	}
