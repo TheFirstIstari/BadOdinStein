@@ -464,6 +464,9 @@ VideoDecoder :: struct {
 	height:         int,
 	fps:            f64,
 	eof:            bool,
+	// Frame buffer pool — reusable buffer to avoid per-frame allocate/free
+	frame_buf:      []u8,
+	frame_buf_len:  int,
 }
 
 video_decoder_open :: proc(path: string) -> ^VideoDecoder {
@@ -595,7 +598,13 @@ video_decoder_read_frame :: proc(dec: ^VideoDecoder, out: ^Img) -> bool {
 			if ret < 0 { return false }
 
 			w, h := dec.width, dec.height
-			pixels := make([]u8, w * h * 3)
+			frame_bytes := w * h * 3
+			if dec.frame_buf_len < frame_bytes {
+				delete(dec.frame_buf)
+				dec.frame_buf = make([]u8, frame_bytes)
+				dec.frame_buf_len = frame_bytes
+			}
+			pixels := dec.frame_buf[:frame_bytes]
 			dst_slices: [1]rawptr
 			dst_slices[0] = raw_data(pixels)
 			dst_stride := c.int(w * 3)
