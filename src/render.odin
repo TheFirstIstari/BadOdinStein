@@ -372,20 +372,14 @@ render_main :: proc() {
         manifest_paths[j + 1] = key
     }
     
-    // Auto-detect dimensions from first manifest
+    // Auto-detect dimensions from first manifest header (src_w/src_h at bytes 0-7)
     if width <= 0 && height <= 0 {
-        tmp_insts: []Inst = nil
-        tmp_n: int
-        if load_manifest(manifest_paths[0], &tmp_insts, &tmp_n, 99999, 99999) == 0 {
-            // Read src_w/src_h from raw file instead
-            data, data_err := os.read_entire_file_from_path(manifest_paths[0], context.allocator)
-            if data_err == nil && len(data) >= 8 {
-                width = int((^u32)(&data[0])^)
-                height = int((^u32)(&data[4])^)
-            }
-            if data_err == nil { delete(data) }
-            delete(tmp_insts)
+        data, data_err := os.read_entire_file_from_path(manifest_paths[0], context.allocator)
+        if data_err == nil && len(data) >= 8 {
+            width = int((^u32)(&data[0])^)
+            height = int((^u32)(&data[4])^)
         }
+        if data_err == nil { delete(data) }
     }
     if width <= 0 { width = 7680 }
     if height <= 0 { height = 4320 }
@@ -470,6 +464,50 @@ render_main :: proc() {
         n := loaded_n[fi]
         insts := loaded_insts[fi]
         
+        // Pre-populate atlas cache for all tiles needed in this frame so the
+        // blit loop encounters only cache hits (no repeated FFmpeg decode on
+        // per-tile cache misses).
+        if n > 0 && insts != nil {
+            for i in 0 ..< n {
+                if insts[i].op_id < 0 { continue }
+                if int(insts[i].op_id) >= reg.n { continue }
+                dw := int(insts[i].w)
+                dh := int(insts[i].h)
+                if dw <= 0 || dh <= 0 { continue }
+                if atlas_lookup(&atlas, int(insts[i].op_id), dw, dh) != nil { continue }
+
+                pdf_path := reg.entries[int(insts[i].op_id)].pdf_path
+                page_idx := int(reg.entries[int(insts[i].op_id)].page_idx)
+
+                src_img: Img
+                if pdf_render_page(pdf_path, page_idx, 1.0, &src_img) != 0 { continue }
+
+                scaled: Img
+                scaled.w = dw
+                scaled.h = dh
+                scaled.channels = channels
+                scaled.stride = dw * channels
+                scaled.pixels = make([]u8, dw * dh * channels)
+
+                if channels == 3 && src_img.channels == 3 {
+                    img_resize_area(&src_img, &scaled, dw, dh)
+                } else {
+                    gray_img: Img
+                    gray_img.w = src_img.w
+                    gray_img.h = src_img.h
+                    gray_img.stride = src_img.w
+                    gray_img.channels = 1
+                    gray_img.pixels = make([]u8, src_img.w * src_img.h)
+                    img_to_gray(&src_img, &gray_img)
+                    img_resize_area(&gray_img, &scaled, dw, dh)
+                    delete(gray_img.pixels)
+                }
+                img_free(&src_img)
+                atlas_insert(&atlas, int(insts[i].op_id), dw, dh, scaled.pixels, channels, scaled.stride)
+                delete(scaled.pixels)
+            }
+        }
+
         if n > 0 && insts != nil {
             for i in 0 ..< n {
                 if insts[i].op_id < 0 {
@@ -487,17 +525,9 @@ render_main :: proc() {
                         if fill_x + fill_w > width { fill_w = width - fill_x }
                         if fill_w > 0 {
                             if channels == 3 {
-                                for px in 0 ..< fill_w {
-                                    off := (dst_y * width + fill_x + px) * 3
-                                    canvas[off] = val
-                                    canvas[off+1] = val
-                                    canvas[off+2] = val
-                                }
+                                mem.set(raw_data(canvas[(dst_y * width + fill_x) * 3 : (dst_y * width + fill_x + fill_w) * 3]), val, fill_w * 3)
                             } else {
-                                mem.zero_slice(canvas[dst_y * width + fill_x:])
-                                canvas[dst_y * width + fill_x] = val
-                                // Actually need fill_w bytes
-                                for px in 0 ..< fill_w { canvas[dst_y * width + fill_x + px] = val }
+                                                            mem.set(raw_data(canvas[dst_y * width + fill_x : dst_y * width + fill_x + fill_w]), val, fill_w)
                             }
                         }
                     }
