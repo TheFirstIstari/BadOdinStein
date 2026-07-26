@@ -358,8 +358,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 	}
 	sum_stride := w + 1
 
-	for x in 0 ..< w + 1 { s.sum[x] = 0 }
-	for y in 0 ..< h { s.sum[(y + 1) * sum_stride] = 0 }
+	mem.zero_slice(s.sum)
 	for y in 0 ..< h {
 		row_sum: i64 = 0
 		for x in 0 ..< w {
