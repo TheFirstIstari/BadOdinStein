@@ -432,6 +432,13 @@ render_main :: proc() {
     canvas_bytes := width * height * channels
     canvas := make([]u8, canvas_bytes)
     defer delete(canvas)
+
+    // Gray scratch buffer — pre-allocated and reused across all tiles
+    // to avoid per-tile malloc/free overhead.
+    gray_scratch: []u8
+    gray_scratch_cap: int
+    gray_scratch_img: Img
+    defer delete(gray_scratch)
     
     // Process frames
     max_frames_actual := len(manifest_paths)
@@ -492,15 +499,19 @@ render_main :: proc() {
                 if channels == 3 && src_img.channels == 3 {
                     img_resize_area(&src_img, &scaled, dw, dh)
                 } else {
-                    gray_img: Img
-                    gray_img.w = src_img.w
-                    gray_img.h = src_img.h
-                    gray_img.stride = src_img.w
-                    gray_img.channels = 1
-                    gray_img.pixels = make([]u8, src_img.w * src_img.h)
-                    img_to_gray(&src_img, &gray_img)
-                    img_resize_area(&gray_img, &scaled, dw, dh)
-                    delete(gray_img.pixels)
+                    gray_needed := src_img.w * src_img.h
+                    if gray_needed > gray_scratch_cap {
+                        delete(gray_scratch)
+                        gray_scratch = make([]u8, gray_needed)
+                        gray_scratch_cap = gray_needed
+                    }
+                    gray_scratch_img.w = src_img.w
+                    gray_scratch_img.h = src_img.h
+                    gray_scratch_img.stride = src_img.w
+                    gray_scratch_img.channels = 1
+                    gray_scratch_img.pixels = gray_scratch[:gray_needed]
+                    img_to_gray(&src_img, &gray_scratch_img)
+                    img_resize_area(&gray_scratch_img, &scaled, dw, dh)
                 }
                 img_free(&src_img)
                 atlas_insert(&atlas, int(insts[i].op_id), dw, dh, scaled.pixels, channels, scaled.stride)
@@ -570,15 +581,19 @@ render_main :: proc() {
                     if channels == 3 && src_img.channels == 3 {
                         img_resize_area(&src_img, &scaled, dw, dh)
                     } else {
-                        gray_img: Img
-                        gray_img.w = src_img.w
-                        gray_img.h = src_img.h
-                        gray_img.stride = src_img.w
-                        gray_img.channels = 1
-                        gray_img.pixels = make([]u8, src_img.w * src_img.h)
-                        img_to_gray(&src_img, &gray_img)
-                        img_resize_area(&gray_img, &scaled, dw, dh)
-                        delete(gray_img.pixels)
+                        gray_needed := src_img.w * src_img.h
+                        if gray_needed > gray_scratch_cap {
+                            delete(gray_scratch)
+                            gray_scratch = make([]u8, gray_needed)
+                            gray_scratch_cap = gray_needed
+                        }
+                        gray_scratch_img.w = src_img.w
+                        gray_scratch_img.h = src_img.h
+                        gray_scratch_img.stride = src_img.w
+                        gray_scratch_img.channels = 1
+                        gray_scratch_img.pixels = gray_scratch[:gray_needed]
+                        img_to_gray(&src_img, &gray_scratch_img)
+                        img_resize_area(&gray_scratch_img, &scaled, dw, dh)
                     }
                     img_free(&src_img)
                     
