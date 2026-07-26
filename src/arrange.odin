@@ -728,7 +728,7 @@ arrange_main :: proc() {
 	delete(fps_data)
 
 	t: Timings
-	frames_done, total_tiles: int
+	frames_done, total_tiles, progress_counter: int
 	start := time.tick_now()
 
 	frame: Img
@@ -791,7 +791,9 @@ arrange_main :: proc() {
 
 		frames_done += 1
 		fi += 1
-		if !g_cli.quiet && frames_done % 30 == 0 {
+		progress_counter -= 1
+		if !g_cli.quiet && progress_counter == 0 {
+			progress_counter = 30
 			elapsed := time.duration_seconds(time.tick_since(start))
 			fps_out := f64(frames_done) / max(elapsed, 0.001)
 			cli_progress_frame("arrange", fi, max_frames if max_frames > 0 else int(source_fps * 300),

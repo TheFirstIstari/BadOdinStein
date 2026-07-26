@@ -463,6 +463,7 @@ render_main :: proc() {
     }
     
     frames_done := 0
+    progress_counter := 30
     start := time.tick_now()
     
     for fi in 0 ..< max_frames_actual {
@@ -631,11 +632,13 @@ render_main :: proc() {
         }
         
         frames_done += 1
+        progress_counter -= 1
 
         // Push frame to encode pipeline (non-blocking)
         pipeline_push(&pipeline, canvas)
         
-        if !g_cli.quiet && frames_done % 30 == 0 {
+        if !g_cli.quiet && progress_counter == 0 {
+            progress_counter = 30
             elapsed := time.duration_seconds(time.tick_since(start))
             fps_out := f64(frames_done) / max(elapsed, 0.001)
             cache_pct := 0.0
