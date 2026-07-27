@@ -1,5 +1,136 @@
 package main
 
+import "core:simd"
+
+// ══════════════════════════════════════════════════════════════
+// SIMD-optimized image operations using core:simd.
+// Adds portable SIMD paths matching BadApplestein's C reference
+// SIMD implementations (SSE2/AVX2/NEON) in imgops.c.
+// ══════════════════════════════════════════════════════════════
+
+// ── Luma conversion constants ──────────────────────────────────
+luma_coeff29_  :: simd.u16x8{29, 29, 29, 29, 29, 29, 29, 29}
+luma_coeff150_ :: simd.u16x8{150, 150, 150, 150, 150, 150, 150, 150}
+luma_coeff77_  :: simd.u16x8{77, 77, 77, 77, 77, 77, 77, 77}
+luma_round128_ :: simd.u16x8{128, 128, 128, 128, 128, 128, 128, 128}
+
+// Shuffle indices for B/G/R channel extraction from BGR layout.
+// Each pixel occupies 3 bytes: B=offset, G=offset+1, R=offset+2.
+// 0xFF marks "don't care" — runtime_swizzle returns 0 for those lanes.
+LUMA_STEP :: 5 // pixels per SIMD iteration (same as C reference SSE2 path)
+
+gray_b_idx :: simd.u8x16{0, 3, 6, 9, 12, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255}
+gray_g_idx :: simd.u8x16{1, 4, 7, 10, 13, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255}
+gray_r_idx :: simd.u8x16{2, 5, 8, 11, 14, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255, 255}
+
+// ── img_to_gray SIMD ──────────────────────────────────────────
+// Portable SIMD BGR→grayscale using runtime_swizzle (PSHUFB/tbl)
+// for byte-level channel extraction and SIMD u16 arithmetic for
+// the luma multiply-add. Processes LUMA_STEP pixels per iteration.
+// Mirrors BadApplestein's img_to_gray_simd (SSE2/NEON).
+
+img_to_gray_simd :: proc(src_pixels: []u8, src_stride: int, dst_pixels: []u8, dst_stride: int, w: int, h: int) {
+	if w <= 0 || h <= 0 {
+		return
+	}
+
+	for y in 0 ..< h {
+		src_row := src_pixels[y*src_stride:]
+		dst_row := dst_pixels[y*dst_stride:]
+
+		x := 0
+		for x + LUMA_STEP <= w {
+			raw := simd.from_slice(simd.u8x16, src_row[x*3:])
+
+			// SIMD channel extraction — single pshufb/tbl instruction per channel
+			b_ch := simd.runtime_swizzle(raw, gray_b_idx)
+			g_ch := simd.runtime_swizzle(raw, gray_g_idx)
+			r_ch := simd.runtime_swizzle(raw, gray_r_idx)
+
+			// Widen u8 lanes 0..4 to u16; lanes 5..7 are zero (padding).
+			b_a := simd.to_array(b_ch)
+			g_a := simd.to_array(g_ch)
+			r_a := simd.to_array(r_ch)
+
+			b16 := simd.u16x8{ u16(b_a[0]), u16(b_a[1]), u16(b_a[2]), u16(b_a[3]), u16(b_a[4]), 0, 0, 0 }
+			g16 := simd.u16x8{ u16(g_a[0]), u16(g_a[1]), u16(g_a[2]), u16(g_a[3]), u16(g_a[4]), 0, 0, 0 }
+			r16 := simd.u16x8{ u16(r_a[0]), u16(r_a[1]), u16(r_a[2]), u16(r_a[3]), u16(r_a[4]), 0, 0, 0 }
+
+			// Luma = (29*B + 150*G + 77*R + 128) >> 8
+			// Max intermediate = 29*255 + 150*255 + 77*255 + 128 = 65408 (fits in u16)
+			luma := simd.mul(b16, luma_coeff29_)
+			luma = simd.add(luma, simd.mul(g16, luma_coeff150_))
+			luma = simd.add(luma, simd.mul(r16, luma_coeff77_))
+			luma = simd.add(luma, luma_round128_)
+			luma = simd.shr(luma, 8) // >> 8 divide by 256
+
+			// Store NUMA_STEP results from the low 5 lanes
+			r := simd.to_array(luma)
+			dst_row[x+0] = u8(r[0])
+			dst_row[x+1] = u8(r[1])
+			dst_row[x+2] = u8(r[2])
+			dst_row[x+3] = u8(r[3])
+			dst_row[x+4] = u8(r[4])
+			x += LUMA_STEP
+		}
+
+		// Scalar tail for remaining pixels
+		for x < w {
+			off := x * 3
+			b := i32(src_row[off+0])
+			g := i32(src_row[off+1])
+			r := i32(src_row[off+2])
+			dst_row[x] = u8((29*b + 150*g + 77*r + 128) >> 8)
+			x += 1
+		}
+	}
+}
+
+// ── img_sobel_magnitude ───────────────────────────────────────
+// Scalar fallback (matching the C reference scalar path).
+// SIMD acceleration requires gather/scatter for the 3×3 kernel,
+// which portable core:simd does not expose directly.
+
+img_sobel_magnitude :: proc(gray: []u8, w, h: int, out: []u8) {
+	if w < 3 || h < 3 {
+		for i in 0 ..< len(out) {
+			out[i] = 0
+		}
+		return
+	}
+
+	for y in 1 ..< h - 1 {
+		for x in 1 ..< w - 1 {
+			tl := i32(gray[(y-1)*w+(x-1)])
+			tc := i32(gray[(y-1)*w+x])
+			tr := i32(gray[(y-1)*w+(x+1)])
+			ml := i32(gray[y*w+(x-1)])
+			mr := i32(gray[y*w+(x+1)])
+			bl := i32(gray[(y+1)*w+(x-1)])
+			bc := i32(gray[(y+1)*w+x])
+			br := i32(gray[(y+1)*w+(x+1)])
+
+			gx := -tl + tr - 2*ml + 2*mr - bl + br
+			gy := -tl - 2*tc - tr + bl + 2*bc + br
+			agx := abs(gx)
+			agy := abs(gy)
+
+			out[y*w+x] = u8(min(max(agx, agy) + min(agx, agy) / 2, 255))
+		}
+	}
+
+	for x in 0 ..< w {
+		out[x] = out[w+x]
+		out[(h-1)*w+x] = out[(h-2)*w+x]
+	}
+	for y in 0 ..< h {
+		out[y*w] = out[y*w+1]
+		out[y*w+(w-1)] = out[y*w+(w-2)]
+	}
+}
+
+// ── High-level wrappers ───────────────────────────────────────
+
 img_to_gray :: proc(src, dst: ^Img) {
 	if src.channels == 1 {
 		for y in 0 ..< src.h {
@@ -7,17 +138,7 @@ img_to_gray :: proc(src, dst: ^Img) {
 		}
 		return
 	}
-	for y in 0 ..< src.h {
-		src_row := y * src.stride
-		dst_row := y * dst.stride
-		for x in 0 ..< src.w {
-			off := src_row + x * 3
-			b := i32(src.pixels[off+0])
-			g := i32(src.pixels[off+1])
-			r := i32(src.pixels[off+2])
-			dst.pixels[dst_row+x] = u8((29*b + 150*g + 77*r + 128) >> 8)
-		}
-	}
+	img_to_gray_simd(src.pixels, src.stride, dst.pixels, dst.stride, src.w, src.h)
 }
 
 img_resize_area :: proc(src, dst: ^Img, nw, nh: int) {
@@ -97,44 +218,6 @@ img_integral :: proc(gray: []u8, w, h: int, allocator := context.allocator) -> [
 		}
 	}
 	return buf
-}
-
-img_sobel_magnitude :: proc(gray: []u8, w, h: int, out: []u8) {
-	if w < 3 || h < 3 {
-		for i in 0 ..< len(out) {
-			out[i] = 0
-		}
-		return
-	}
-
-	for y in 1 ..< h - 1 {
-		for x in 1 ..< w - 1 {
-			tl := i32(gray[(y-1)*w+(x-1)])
-			tc := i32(gray[(y-1)*w+x])
-			tr := i32(gray[(y-1)*w+(x+1)])
-			ml := i32(gray[y*w+(x-1)])
-			mr := i32(gray[y*w+(x+1)])
-			bl := i32(gray[(y+1)*w+(x-1)])
-			bc := i32(gray[(y+1)*w+x])
-			br := i32(gray[(y+1)*w+(x+1)])
-
-			gx := -tl + tr - 2*ml + 2*mr - bl + br
-			gy := -tl - 2*tc - tr + bl + 2*bc + br
-			agx := abs(gx)
-			agy := abs(gy)
-
-			out[y*w+x] = u8(min(max(agx, agy) + min(agx, agy) / 2, 255))
-		}
-	}
-
-	for x in 0 ..< w {
-		out[x] = out[w+x]
-		out[(h-1)*w+x] = out[(h-2)*w+x]
-	}
-	for y in 0 ..< h {
-		out[y*w] = out[y*w+1]
-		out[y*w+(w-1)] = out[y*w+(w-2)]
-	}
 }
 
 img_compute_feature :: proc(crop: ^Img, N, G, color: int, out: []u8) {
