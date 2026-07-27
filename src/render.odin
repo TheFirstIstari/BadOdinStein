@@ -76,6 +76,24 @@ atlas_lookup :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int) -> ^Atlas_Entry {
     return nil
 }
 
+// Fast-path lookup for blit loop — no stats tracking, no LRU update.
+// Matches C's atlas_lookup() which is used in the hot render path.
+atlas_lookup_readonly :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int) -> ^Atlas_Entry {
+    if !atlas.enabled { return nil }
+    h := atlas_hash(op_id, tw, th)
+    for probe in 0 ..< atlas.capacity {
+        idx := int((h + u32(probe)) % u32(atlas.capacity))
+        if atlas.entries[idx].valid == 0 { return nil }
+        if atlas.entries[idx].valid == 2 { continue }
+        if atlas.entries[idx].op_id == op_id &&
+           atlas.entries[idx].tile_w == tw &&
+           atlas.entries[idx].tile_h == th {
+            return &atlas.entries[idx]
+        }
+    }
+    return nil
+}
+
 atlas_evict_lru :: proc(atlas: ^Atlas_Cache) {
     oldest_idx := -1
     oldest_tick: u32 = max(u32)
@@ -132,6 +150,50 @@ atlas_insert :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int, src_pixels: []u8, 
         }
         _ = probe
     }
+}
+
+// Pre-populate the atlas cache: check cache, render, scale, and insert
+// on a miss. Matches C's atlas_cache_tile() for the pre-pop loop.
+atlas_cache_tile :: proc(atlas: ^Atlas_Cache, reg: ^Registry, op_id, tw, th, channels: int,
+                          gray_scratch: ^[]u8, gray_scratch_cap: ^int, gray_scratch_img: ^Img) -> bool {
+    if op_id < 0 || op_id >= reg.n { return false }
+    if tw <= 0 || th <= 0 { return false }
+    if atlas_lookup_readonly(atlas, op_id, tw, th) != nil { return true }
+
+    pdf_path := reg.entries[op_id].pdf_path
+    page_idx := int(reg.entries[op_id].page_idx)
+
+    src_img: Img
+    if pdf_render_page(pdf_path, page_idx, 1.0, &src_img) != 0 { return false }
+
+    scaled: Img
+    scaled.w = tw
+    scaled.h = th
+    scaled.channels = channels
+    scaled.stride = tw * channels
+    scaled.pixels = make([]u8, tw * th * channels)
+
+    if channels == 3 && src_img.channels == 3 {
+        img_resize_area(&src_img, &scaled, tw, th)
+    } else {
+        gray_needed := src_img.w * src_img.h
+        if gray_needed > gray_scratch_cap^ {
+            delete(gray_scratch^)
+            gray_scratch^ = make([]u8, gray_needed)
+            gray_scratch_cap^ = gray_needed
+        }
+        gray_scratch_img.w = src_img.w
+        gray_scratch_img.h = src_img.h
+        gray_scratch_img.stride = src_img.w
+        gray_scratch_img.channels = 1
+        gray_scratch_img.pixels = gray_scratch^[:gray_needed]
+        img_to_gray(&src_img, gray_scratch_img)
+        img_resize_area(gray_scratch_img, &scaled, tw, th)
+    }
+    img_free(&src_img)
+    atlas_insert(atlas, op_id, tw, th, scaled.pixels, channels, scaled.stride)
+    delete(scaled.pixels)
+    return false
 }
 
 // ── Encode pipeline (producer-consumer) ──
