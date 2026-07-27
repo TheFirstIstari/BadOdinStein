@@ -125,6 +125,29 @@ especially beneficial when running with auto-detected output dimensions (the def
 
 ---
 
+### 6. Replaced Scalar-through-SIMD L1 Distance with Hardware SIMD Intrinsics via C Bridge
+
+**Files:** `src/match.odin`, `src/match_bridge.c` (new), `src/libmatch_bridge.a` (new)
+
+**Before:** `feature_l1` and `feature_l1_bounded` in `match.odin` used Odin's `core:simd`
+module but immediately defeated the SIMD benefit by calling `simd.to_array(diff)` to
+convert the SIMD result into a scalar array, then manually widening each byte to u16
+in scalar code, and finally accumulating in `simd.u16x8`. This path was essentially
+scalar with SIMD setup overhead: no hardware horizontal sum, no efficient widening.
+
+**After:** Added `match_bridge.c` which implements the same SSE2/AVX2/NEON hardware
+intrinsics as the C reference (BadApplestein's `match.c`): `_mm_sad_epu8` /
+`_mm256_sad_epu8` for x86_64 and `vabdq_u8` + `vpadalq_u16` for ARM NEON. These are
+single-instruction sum-of-absolute-differences with hardware horizontal accumulation
+into 64-bit lane sums. The Odin `feature_l1` and `feature_l1_bounded` wrappers now
+delegate to these C bridge functions via a `foreign import`.
+
+**Before/After:** The SIMD L1 distance computation goes from a scalar-widening path
+(16 scalar iterations to widen u8→u16, then 8 scalar additions per group) to a
+single hardware instruction per 16–32 input bytes with automatic reduction.
+
+---
+
 ## Verification
 
 | Check | Result |
