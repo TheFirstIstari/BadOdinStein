@@ -12,18 +12,22 @@ feature_l1 :: proc(a, b: []u8) -> u32 {
 	dist: u64 = 0
 	j := 0
 
-	// SIMD path: 16 bytes at a time, accumulate into u16 to avoid overflow
-	acc := simd.u16x8{0, 0, 0, 0, 0, 0, 0, 0}
+	// SIMD path: 16 bytes at a time, accumulate into u32 to avoid overflow.
+	// Use u32x4 accumulator (matching C NEON's uint32x4_t) so lanes
+	// don't overflow for any practical feature vector length.
+	acc := simd.u32x4{0, 0, 0, 0}
 	for j + 16 <= n {
 		va := simd.from_slice(simd.u8x16, a[j:j+16])
 		vb := simd.from_slice(simd.u8x16, b[j:j+16])
 		diff := simd.abs_diff(va, vb) // u8x16: |a-b| per byte
 
-		// Convert to array and manually widen to u16x8 (two halves)
 		d := simd.to_array(diff)
-		lo := simd.u16x8{u16(d[0]), u16(d[1]), u16(d[2]), u16(d[3]), u16(d[4]), u16(d[5]), u16(d[6]), u16(d[7])}
-		hi := simd.u16x8{u16(d[8]), u16(d[9]), u16(d[10]), u16(d[11]), u16(d[12]), u16(d[13]), u16(d[14]), u16(d[15])}
-		acc = acc + lo + hi
+		acc += simd.u32x4{
+			u32(d[0]) + u32(d[1]) + u32(d[2]) + u32(d[3]),
+			u32(d[4]) + u32(d[5]) + u32(d[6]) + u32(d[7]),
+			u32(d[8]) + u32(d[9]) + u32(d[10]) + u32(d[11]),
+			u32(d[12]) + u32(d[13]) + u32(d[14]) + u32(d[15]),
+		}
 		j += 16
 	}
 
@@ -59,8 +63,11 @@ feature_l1_bounded :: proc(a, b: []u8, bound: u32) -> u32 {
 	dist: u64 = 0
 	j := 0
 
-	// SIMD path: 16 bytes at a time with periodic bound checks
-	acc := simd.u16x8{0, 0, 0, 0, 0, 0, 0, 0}
+	// SIMD path: 16 bytes at a time with periodic bound checks.
+	// Use u32x4 accumulator (matching C NEON's uint32x4_t) so lanes
+	// don't overflow for any practical feature vector length, eliminating
+	// the need for periodic accumulator zeroing.
+	acc := simd.u32x4{0, 0, 0, 0}
 	CHUNK :: 16
 	for j + CHUNK <= n {
 		va := simd.from_slice(simd.u8x16, a[j:j+CHUNK])
@@ -68,9 +75,14 @@ feature_l1_bounded :: proc(a, b: []u8, bound: u32) -> u32 {
 		diff := simd.abs_diff(va, vb)
 
 		d := simd.to_array(diff)
-		lo := simd.u16x8{u16(d[0]), u16(d[1]), u16(d[2]), u16(d[3]), u16(d[4]), u16(d[5]), u16(d[6]), u16(d[7])}
-		hi := simd.u16x8{u16(d[8]), u16(d[9]), u16(d[10]), u16(d[11]), u16(d[12]), u16(d[13]), u16(d[14]), u16(d[15])}
-		acc = acc + lo + hi
+		// Groups of 4 u8 diffs summed into each u32 lane:
+		// lane 0 = d[0]+d[1]+d[2]+d[3], lane 1 = d[4]+d[5]+d[6]+d[7], etc.
+		acc += simd.u32x4{
+			u32(d[0]) + u32(d[1]) + u32(d[2]) + u32(d[3]),
+			u32(d[4]) + u32(d[5]) + u32(d[6]) + u32(d[7]),
+			u32(d[8]) + u32(d[9]) + u32(d[10]) + u32(d[11]),
+			u32(d[12]) + u32(d[13]) + u32(d[14]) + u32(d[15]),
+		}
 
 		// Check bound every 64 bytes (4 chunks), accumulating total dist
 		if (j / CHUNK) % 4 == 3 {
@@ -81,7 +93,6 @@ feature_l1_bounded :: proc(a, b: []u8, bound: u32) -> u32 {
 				}
 				return u32(dist)
 			}
-			acc = simd.u16x8{0, 0, 0, 0, 0, 0, 0, 0}
 		}
 		j += CHUNK
 	}
