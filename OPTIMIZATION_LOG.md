@@ -125,6 +125,44 @@ especially beneficial when running with auto-detected output dimensions (the def
 
 ---
 
+### 6. Fixed `feature_l1_bounded` Accumulation Bug in SIMD L1 Early Termination
+
+**File:** `src/match.odin`
+
+**Bug:** The periodic bound check inside `feature_l1_bounded` was overwriting `dist`
+with `=` instead of accumulating with `+=`. This caused all previously accumulated
+distance between periodic checks to be discarded when the accumulator was zeroed,
+producing incorrect early termination results that diverged from the C reference
+(BadAppleStein).
+
+**Before:**
+```odin
+dist = u64(simd.reduce_add_pairs(acc))
+```
+
+**After:**
+```odin
+dist += u64(simd.reduce_add_pairs(acc))
+```
+
+**Root cause:** The C reference (`feature_l1_bounded` in `match.c`) accumulates into
+a running total `s` using a full horizontal sum of the SIMD accumulator at the end
+of each SIMD block without ever resetting the SIMD accumulator mid-loop. Each
+periodic bound check reads a local horizontal sum from the non-reset accumulator
+without modifying either the accumulator or the running total. In the Odin
+implementation, the SIMD accumulator (`acc`, 16-bit lanes) must be periodically
+reset to prevent u16 lane overflow, but `dist` was being overwritten rather than
+accumulated, discarding all prior distance data.
+
+**Fix:** Changed `dist =` to `dist +=` and reworded the comment to clarify that
+the periodic check accumulates the current SIMD block's contribution into the
+running total before checking the bound. The `acc` zeroing after the check remains
+(to prevent u16 overflow), but `dist` now correctly reflects the cumulative total.
+This makes early termination return the correct total distance (not a partial one)
+and ensures the bounded SIMD L1 optimization matches the C reference behavior.
+
+---
+
 ## Verification
 
 | Check | Result |
@@ -135,3 +173,4 @@ especially beneficial when running with auto-detected output dimensions (the def
 | `./badodin render --help` | ✅ |
 | `./badodin build --help` | ✅ |
 | Feature parity with C reference | ✅ All CLI options, algorithms preserved |
+| `feature_l1_bounded` dist accumulation bug fixed | ✅ dist uses += not = (matches C ref) |
