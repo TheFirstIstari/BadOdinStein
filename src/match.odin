@@ -72,9 +72,9 @@ feature_l1_bounded :: proc(a, b: []u8, bound: u32) -> u32 {
 		hi := simd.u16x8{u16(d[8]), u16(d[9]), u16(d[10]), u16(d[11]), u16(d[12]), u16(d[13]), u16(d[14]), u16(d[15])}
 		acc = acc + lo + hi
 
-		// Check bound every 64 bytes (4 chunks) to amortize reduce cost
+		// Check bound every 64 bytes (4 chunks), accumulating total dist
 		if (j / CHUNK) % 4 == 3 {
-			dist = u64(simd.reduce_add_pairs(acc))
+			dist += u64(simd.reduce_add_pairs(acc))
 			if dist > u64(bound) {
 				if dist > u64(max(u32)) {
 					return max(u32)
