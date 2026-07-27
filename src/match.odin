@@ -1,5 +1,6 @@
 package main
 
+import "core:fmt"
 import "core:mem"
 import "core:simd"
 import "core:thread"
@@ -39,6 +40,18 @@ feature_l1 :: proc(a, b: []u8) -> u32 {
 		return max(u32)
 	}
 	return u32(dist)
+}
+
+// Debug output for monitoring
+match_debug_output :: proc(msg: string) {
+	if g_cli.quiet { return }
+	if g_cli.json_mode {
+		fmt.eprintf("{{\"level\":\"debug\",\"component\":\"match\",\"message\":\"%s\"}}", msg)
+		return
+	}
+	fmt.eprint("\033[1;34m[match debug]\033[0m ")
+	fmt.eprintf(msg)
+	fmt.eprintf("\n")
 }
 
 feature_l1_bounded :: proc(a, b: []u8, bound: u32) -> u32 {
