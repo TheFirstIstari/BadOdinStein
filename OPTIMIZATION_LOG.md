@@ -1,6 +1,6 @@
 # BadOdinStein Optimization Log
 
-Date: 2026-07-26
+Date: 2026-07-27
 
 ## Summary of Optimizations Applied
 
@@ -125,12 +125,38 @@ especially beneficial when running with auto-detected output dimensions (the def
 
 ---
 
+### 6. Thread-Pool Parallel Instruction Blit (Render Loop)
+
+**File:** `src/render.odin`
+
+**Before:** The per-frame blit loop processed instructions sequentially on the main thread,
+identical to a single-threaded C rendering path without OpenMP. Each instruction
+(atlas-cache-hit blit or solid fill) ran one after another.
+
+**After:** Added a `Blit_Context` struct and `blit_task_worker` proc, and replaced the
+sequential blit loop with thread pool parallelism via `thread_pool_submit` +
+`thread_pool_wait`. This is the Odin equivalent of C's
+`#pragma omp parallel for schedule(dynamic) if(n > 4)`. Each frame's instructions
+are submitted as independent tasks to the persistent thread pool, and the main thread
+waits for all to complete before pushing the assembled frame to the encode pipeline.
+
+The pre-populate atlas pass (sequential) ensures the parallel blit loop encounters only
+cache hits, making it read-only on atlas state and safe for concurrent execution.
+Canvas writes are disjoint per instruction (non-overlapping tile placements), so no
+locks are needed for blit operations.
+
+**Impact:** Multi-threaded instruction processing per frame matches the C reference's
+OpenMP parallelism pattern, utilizing all available CPU cores for the compute-bound
+blit stage.
+
+---
+
 ## Verification
 
 | Check | Result |
 |---|---|
-| `mise run build` after each pass | ✅ All pass |
-| `./badodin --help` | ✅ All subcommands show help |
+| `odin build src/ -out:badodin -o:speed` | ✅ |
+| `./badodin --help` | ✅ |
 | `./badodin arrange --help` | ✅ |
 | `./badodin render --help` | ✅ |
 | `./badodin build --help` | ✅ |
