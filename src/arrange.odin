@@ -635,15 +635,41 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 				}
 			}
 
+			// Deduplicate miss features: only match unique features once,
+			// then broadcast results to all duplicates.
 			if nt > 0 {
-				tm := time.tick_now()
-				if nt > s.result_cap {
-					s.results = make([]int, nt)
-					s.result_cap = nt
-				}
-				match_batch_coarse(db.data, tiles[:nt * feat_len], db.n_pages, nt, feat_len, coarse_len, s.results[:nt])
+				unique_nt := 0
+				dedup_map := make([]int, nt)
 				for i in 0 ..< nt {
-					pid := s.results[i]
+					found_dup := false
+					feat_i := tiles[i * feat_len :]
+					h_i := full_feat_hash(feat_i, feat_len)
+					for j in 0 ..< unique_nt {
+						feat_j := tiles[j * feat_len :]
+						h_j := full_feat_hash(feat_j, feat_len)
+						if h_i == h_j {
+							dedup_map[i] = j
+							found_dup = true
+							break
+						}
+					}
+					if !found_dup {
+						dedup_map[i] = unique_nt
+						if unique_nt != i {
+							copy(tiles[unique_nt * feat_len:], feat_i[:feat_len])
+						}
+						unique_nt += 1
+					}
+				}
+
+				tm := time.tick_now()
+				if unique_nt > s.result_cap {
+					s.results = make([]int, unique_nt)
+					s.result_cap = unique_nt
+				}
+				match_batch_coarse(db.data, tiles[:unique_nt * feat_len], db.n_pages, unique_nt, feat_len, coarse_len, s.results[:unique_nt])
+				for i in 0 ..< nt {
+					pid := s.results[dedup_map[i]]
 					midx := s.specs[s.miss_idx[i]].manifest_idx
 					manifest[midx].op_id = i32(pid)
 					manifest[midx].page_idx = reg.entries[pid].page_idx
