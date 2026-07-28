@@ -164,7 +164,28 @@ single hardware instruction per 16–32 input bytes with automatic reduction.
 
 ---
 
-## Verification
+### 6. Deduplicate Miss Features Before Batch Matching (solve-dedup)
+
+**File:** `src/arrange.odin`
+
+**Before:** When multiple tiles missed both the coarse and full feature caches,
+all of them were passed to `match_batch_coarse` — an expensive operation that
+computes L1 distances against every library page. If two tiles had identical
+features (common in frames with uniform or repeating visual content), both
+would be matched independently, producing redundant L1 distance computations.
+
+**After:** Before calling `match_batch_coarse`, miss features are deduplicated
+by their `full_feat_hash`. Only unique feature vectors are passed to the batch
+matching step. A `dedup_map` tracks which original miss entries correspond to
+each unique feature, allowing results to be broadcast back to all duplicates.
+Cache updates then run for every miss entry (including duplicates) so the
+full and coarse caches remain correctly populated.
+
+**Impact:** Reduces L1 distance computation in `match_batch_coarse`
+proportionally to the duplicate rate among miss features. Frames with many
+duplicate tiles (e.g., large uniform areas split into multiple 8×8 blocks)
+benefit most — the batch matching step can see near-linear speedups in the
+number of unique miss features.
 
 | Check | Result |
 |---|---|
