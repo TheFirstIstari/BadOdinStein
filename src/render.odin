@@ -8,6 +8,7 @@ import "core:math"
 import "core:time"
 import "core:thread"
 import "core:sync"
+import "core:sort"
 
 MAX_INSTS :: 65536
 FRAME_QUEUE_SIZE :: 4
@@ -356,6 +357,38 @@ load_manifest :: proc(path: string, out_insts: ^[]Inst, out_n: ^int, target_w, t
     return 0
 }
 
+// ── Manifest path comparator (matches C reference qsort comparator) ──
+// Extracts the numeric frame number from the filename (after last '/')
+// and sorts numerically. Falls back to lexicographic if no digits found.
+cmp_manifest :: proc(a, b: string) -> int {
+    fa := strings.last_index_byte(a, '/')
+    fb := strings.last_index_byte(b, '/')
+    a_tail := a
+    b_tail := b
+    if fa >= 0 { a_tail = a[fa + 1:] }
+    if fb >= 0 { b_tail = b[fb + 1:] }
+
+    na: int = 0
+    for c in a_tail {
+        if c >= '0' && c <= '9' {
+            na = na * 10 + int(c - '0')
+        } else {
+            break
+        }
+    }
+    nb: int = 0
+    for c in b_tail {
+        if c >= '0' && c <= '9' {
+            nb = nb * 10 + int(c - '0')
+        } else {
+            break
+        }
+    }
+
+    if na != nb { return na - nb }
+    return sort.compare_strings(a, b)
+}
+
 // ── Main render entry point ──
 render_main :: proc() {
     man_dir := cli_opt_str("manifests", "manifests_greedy")
@@ -421,18 +454,8 @@ render_main :: proc() {
         cli_die("no manifests found in: %s", man_dir)
     }
     cli_info("manifests: %d frames", len(manifest_paths))
-    
-    // Sort manifest paths by frame number (extract number from filename)
-    // Use insertion sort — fast enough for typical frame counts
-    for i in 1 ..< len(manifest_paths) {
-        key := manifest_paths[i]
-        j := i - 1
-        for j >= 0 && manifest_paths[j] > key {
-            manifest_paths[j + 1] = manifest_paths[j]
-            j -= 1
-        }
-        manifest_paths[j + 1] = key
-    }
+
+    sort.quick_sort_proc(manifest_paths[:], cmp_manifest)
     
     // Auto-detect dimensions from first manifest header (src_w/src_h at bytes 0-7)
     if width <= 0 && height <= 0 {

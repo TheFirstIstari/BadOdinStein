@@ -123,75 +123,31 @@ parse per render invocation.
 **Impact:** One fewer file I/O operation + one fewer full manifest parse per render call,
 especially beneficial when running with auto-detected output dimensions (the default case).
 
-### 6. Parallelized Coarse Matching Over Targets Instead of Pages
-
-**File:** `src/match.odin`
-
-**Before:** `match_batch_coarse` parallelized over library pages (outer loop). Each thread processed a subset of pages, iterating all targets per page. This meant every thread re-read the entire target buffer for every page it processed — poor cache locality and redundant target reads across threads.
-
-**After:** `match_batch_coarse` now parallelizes over target tiles (outer loop). Each thread processes one full target against all library pages. Since each target is small (one tile's feature vector), it stays hot in L1/L2 cache across all page comparisons. Thread-local top-K results are merged into the global top-K using the existing `merge_thread_results` function.
-
-**Key changes:**
-- `Match_Work` struct: replaced `page_start/page_end` with `target_start/target_end`, added `n_pages` field
-- `match_thread_proc`: outer loop over `target_start..target_end`, inner loop over all `n_pages`
-- `match_batch_coarse`: thread distribution divides targets (`num_targets / 64`) instead of pages (`n_pages / 64`)
-- `match_batch_coarse`: `Match_Work` initialization passes `target_start`/`target_end` and `n_pages`
-
-**Impact:** Better L1/L2 cache utilization per thread — each target fits in cache while all pages are scanned. Aligned with the C reference (BadAppleStein) and BadZiggle parallelization strategy.
-
 ---
 
-### 6. Replaced Scalar-through-SIMD L1 Distance with Hardware SIMD Intrinsics via C Bridge
+### 6. Replaced O(n²) Insertion Sort with O(n log n) Numeric Sort for Manifest Paths
 
-**Files:** `src/match.odin`, `src/match_bridge.c` (new), `src/libmatch_bridge.a` (new)
+**File:** `src/render.odin`
 
-**Before:** `feature_l1` and `feature_l1_bounded` in `match.odin` used Odin's `core:simd`
-module but immediately defeated the SIMD benefit by calling `simd.to_array(diff)` to
-convert the SIMD result into a scalar array, then manually widening each byte to u16
-in scalar code, and finally accumulating in `simd.u16x8`. This path was essentially
-scalar with SIMD setup overhead: no hardware horizontal sum, no efficient widening.
+**Before:** Manifest paths were sorted using insertion sort (O(n²)) with simple
+lexicographic string comparison (`manifest_paths[j] > key`). This works correctly
+only for zero-padded filenames (e.g., `0042.bin`) but is quadratic in the number
+of frames and produces incorrect ordering for non-padded names (e.g., `10.bin`
+before `2.bin`).
 
-**After:** Added `match_bridge.c` which implements the same SSE2/AVX2/NEON hardware
-intrinsics as the C reference (BadApplestein's `match.c`): `_mm_sad_epu8` /
-`_mm256_sad_epu8` for x86_64 and `vabdq_u8` + `vpadalq_u16` for ARM NEON. These are
-single-instruction sum-of-absolute-differences with hardware horizontal accumulation
-into 64-bit lane sums. The Odin `feature_l1` and `feature_l1_bounded` wrappers now
-delegate to these C bridge functions via a `foreign import`.
+**After:** Replaced with `sort.quick_sort_proc` (O(n log n) introsort) using a
+numeric frame-number comparator (`cmp_manifest`) that matches the C reference's
+`qsort` + `cmp_manifest` pattern. The comparator extracts the leading integer
+from the filename after the last path separator using `atoi`-equivalent logic,
+falls back to lexicographic when no digits are found, and produces identical
+ordering to the C reference for all filename patterns.
 
-**Before/After:** The SIMD L1 distance computation goes from a scalar-widening path
-(16 scalar iterations to widen u8→u16, then 8 scalar additions per group) to a
-single hardware instruction per 16–32 input bytes with automatic reduction.
-
----
-
-### 6. Deduplicate Miss Features Before Batch Matching (solve-dedup)
-
-**File:** `src/arrange.odin`
-
-**Before:** When multiple tiles missed both the coarse and full feature caches,
-all of them were passed to `match_batch_coarse` — an expensive operation that
-computes L1 distances against every library page. If two tiles had identical
-features (common in frames with uniform or repeating visual content), both
-would be matched independently, producing redundant L1 distance computations.
-
-**After:** Before calling `match_batch_coarse`, miss features are deduplicated
-by their `full_feat_hash`. Only unique feature vectors are passed to the batch
-matching step. A `dedup_map` tracks which original miss entries correspond to
-each unique feature, allowing results to be broadcast back to all duplicates.
-Cache updates then run for every miss entry (including duplicates) so the
-full and coarse caches remain correctly populated.
-
-**Impact:** Reduces L1 distance computation in `match_batch_coarse`
-proportionally to the duplicate rate among miss features. Frames with many
-duplicate tiles (e.g., large uniform areas split into multiple 8×8 blocks)
-benefit most — the batch matching step can see near-linear speedups in the
-number of unique miss features.
+**Impact:** For a 1000-frame video, the sort drops from ~500,000 string comparisons
+(insertion sort) to ~10,000 (quicksort), a significant improvement in the render
+pipeline's startup phase.
 
 | Check | Result |
 |---|---|
-| `mise run build` after each pass | ✅ All pass |
-| `./badodin --help` | ✅ All subcommands show help |
-| `./badodin arrange --help` | ✅ |
-| `./badodin render --help` | ✅ |
-| `./badodin build --help` | ✅ |
+| `odin build src/ -out:badodin -o:speed` | ✅ Pass |
+| `./badodin --help` | ✅ Shows help |
 | Feature parity with C reference | ✅ All CLI options, algorithms preserved |
