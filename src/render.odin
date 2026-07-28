@@ -76,6 +76,24 @@ atlas_lookup :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int) -> ^Atlas_Entry {
     return nil
 }
 
+// Fast-path lookup for blit loop — no stats tracking, no LRU update.
+// Matches C's atlas_lookup() which is used in the hot render path.
+atlas_lookup_readonly :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int) -> ^Atlas_Entry {
+    if !atlas.enabled { return nil }
+    h := atlas_hash(op_id, tw, th)
+    for probe in 0 ..< atlas.capacity {
+        idx := int((h + u32(probe)) % u32(atlas.capacity))
+        if atlas.entries[idx].valid == 0 { return nil }
+        if atlas.entries[idx].valid == 2 { continue }
+        if atlas.entries[idx].op_id == op_id &&
+           atlas.entries[idx].tile_w == tw &&
+           atlas.entries[idx].tile_h == th {
+            return &atlas.entries[idx]
+        }
+    }
+    return nil
+}
+
 atlas_evict_lru :: proc(atlas: ^Atlas_Cache) {
     oldest_idx := -1
     oldest_tick: u32 = max(u32)
@@ -134,74 +152,48 @@ atlas_insert :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int, src_pixels: []u8, 
     }
 }
 
-// ── Parallel blit task ──────────────────────────────────────────────────
-// Used by render_main to process instructions in parallel via thread_pool.
+// Pre-populate the atlas cache: check cache, render, scale, and insert
+// on a miss. Matches C's atlas_cache_tile() for the pre-pop loop.
+atlas_cache_tile :: proc(atlas: ^Atlas_Cache, reg: ^Registry, op_id, tw, th, channels: int,
+                          gray_scratch: ^[]u8, gray_scratch_cap: ^int, gray_scratch_img: ^Img) -> bool {
+    if op_id < 0 || op_id >= reg.n { return false }
+    if tw <= 0 || th <= 0 { return false }
+    if atlas_lookup_readonly(atlas, op_id, tw, th) != nil { return true }
 
-Blit_Context :: struct {
-    inst:      Inst,
-    atlas:     ^Atlas_Cache,
-    canvas:    []u8,
-    width:     int,
-    height:    int,
-    channels:  int,
-}
+    pdf_path := reg.entries[op_id].pdf_path
+    page_idx := int(reg.entries[op_id].page_idx)
 
-blit_task_worker :: proc(data: rawptr) {
-    ctx := cast(^Blit_Context)data
-    inst := ctx.inst
-    w := int(inst.w)
-    h := int(inst.h)
-    dx := int(inst.x)
-    dy := int(inst.y)
+    src_img: Img
+    if pdf_render_page(pdf_path, page_idx, 1.0, &src_img) != 0 { return false }
 
-    if inst.op_id < 0 {
-        // Solid fill
-        val: u8 = 0
-        if inst.op_id == -2 { val = 255 }
-        for yy in 0 ..< h {
-            dst_y := dy + yy
-            if dst_y < 0 || dst_y >= ctx.height { continue }
-            fill_x := dx
-            fill_w := w
-            if fill_x < 0 { fill_w += fill_x; fill_x = 0 }
-            if fill_x + fill_w > ctx.width { fill_w = ctx.width - fill_x }
-            if fill_w > 0 {
-                if ctx.channels == 3 {
-                    mem.set(raw_data(ctx.canvas[(dst_y * ctx.width + fill_x) * 3 : (dst_y * ctx.width + fill_x + fill_w) * 3]), val, fill_w * 3)
-                } else {
-                    mem.set(raw_data(ctx.canvas[dst_y * ctx.width + fill_x : dst_y * ctx.width + fill_x + fill_w]), val, fill_w)
-                }
-            }
+    scaled: Img
+    scaled.w = tw
+    scaled.h = th
+    scaled.channels = channels
+    scaled.stride = tw * channels
+    scaled.pixels = make([]u8, tw * th * channels)
+
+    if channels == 3 && src_img.channels == 3 {
+        img_resize_area(&src_img, &scaled, tw, th)
+    } else {
+        gray_needed := src_img.w * src_img.h
+        if gray_needed > gray_scratch_cap^ {
+            delete(gray_scratch^)
+            gray_scratch^ = make([]u8, gray_needed)
+            gray_scratch_cap^ = gray_needed
         }
-        return
+        gray_scratch_img.w = src_img.w
+        gray_scratch_img.h = src_img.h
+        gray_scratch_img.stride = src_img.w
+        gray_scratch_img.channels = 1
+        gray_scratch_img.pixels = gray_scratch^[:gray_needed]
+        img_to_gray(&src_img, gray_scratch_img)
+        img_resize_area(gray_scratch_img, &scaled, tw, th)
     }
-
-    if w <= 0 || h <= 0 { return }
-
-    cached := atlas_lookup(ctx.atlas, int(inst.op_id), w, h)
-    if cached == nil { return }
-
-    tile_pixels := cached.pixels
-    tile_stride := cached.stride
-    tile_channels := ctx.channels
-
-    for yy in 0 ..< h {
-        dst_y := dy + yy
-        if dst_y < 0 || dst_y >= ctx.height { continue }
-        copy_x := dx
-        copy_src_x := 0
-        copy_w := w
-        if copy_x < 0 { copy_src_x = -copy_x; copy_w += copy_x; copy_x = 0 }
-        if copy_x + copy_w > ctx.width { copy_w = ctx.width - copy_x }
-        if copy_w > 0 {
-            copy_bytes := copy_w * tile_channels
-            canvas_off := (dst_y * ctx.width + copy_x) * ctx.channels
-            tile_off := yy * tile_stride + copy_src_x * tile_channels
-            if canvas_off + copy_bytes <= len(ctx.canvas) && tile_off + copy_bytes <= len(tile_pixels) {
-                copy(ctx.canvas[canvas_off:], tile_pixels[tile_off:])
-            }
-        }
-    }
+    img_free(&src_img)
+    atlas_insert(atlas, op_id, tw, th, scaled.pixels, channels, scaled.stride)
+    delete(scaled.pixels)
+    return false
 }
 
 // ── Encode pipeline (producer-consumer) ──
@@ -531,20 +523,17 @@ render_main :: proc() {
         pipeline_close(&pipeline)
         thread.join(enc_thread)
     }
-
-    pool := thread_pool_create(sys.num_threads)
-    defer thread_pool_destroy(pool)
-
+    
     frames_done := 0
     progress_counter := 30
     start := time.tick_now()
-
+    
     for fi in 0 ..< max_frames_actual {
         mem.zero_slice(canvas)
-
+        
         n := loaded_n[fi]
         insts := loaded_insts[fi]
-
+        
         // Pre-populate atlas cache for all tiles needed in this frame so the
         // blit loop encounters only cache hits (no repeated FFmpeg decode on
         // per-tile cache misses).
@@ -593,23 +582,115 @@ render_main :: proc() {
             }
         }
 
-        // Parallel blit instructions via thread pool (equivalent to C's
-        // OpenMP #pragma omp parallel for schedule(dynamic)).
         if n > 0 && insts != nil {
-            contexts := make([]Blit_Context, n)
             for i in 0 ..< n {
-                contexts[i] = Blit_Context{
-                    inst      = insts[i],
-                    atlas     = &atlas,
-                    canvas    = canvas,
-                    width     = width,
-                    height    = height,
-                    channels  = channels,
+                if insts[i].op_id < 0 {
+                    // Solid fill
+                    val: u8 = 0
+                    if insts[i].op_id == -2 { val = 255 }
+                    sy0 := int(insts[i].y)
+                    sx0 := int(insts[i].x)
+                    for yy in 0 ..< int(insts[i].h) {
+                        dst_y := sy0 + yy
+                        if dst_y < 0 || dst_y >= height { continue }
+                        fill_x := sx0
+                        fill_w := int(insts[i].w)
+                        if fill_x < 0 { fill_w += fill_x; fill_x = 0 }
+                        if fill_x + fill_w > width { fill_w = width - fill_x }
+                        if fill_w > 0 {
+                            if channels == 3 {
+                                mem.set(raw_data(canvas[(dst_y * width + fill_x) * 3 : (dst_y * width + fill_x + fill_w) * 3]), val, fill_w * 3)
+                            } else {
+                                                            mem.set(raw_data(canvas[dst_y * width + fill_x : dst_y * width + fill_x + fill_w]), val, fill_w)
+                            }
+                        }
+                    }
+                    continue
                 }
-                thread_pool_submit(pool, blit_task_worker, rawptr(&contexts[i]))
+                
+                if int(insts[i].op_id) >= reg.n { continue }
+                
+                dw := int(insts[i].w)
+                dh := int(insts[i].h)
+                if dw <= 0 || dh <= 0 { continue }
+                
+                // Check atlas cache
+                cached := atlas_lookup(&atlas, int(insts[i].op_id), dw, dh)
+                
+                tile_pixels: []u8 = nil
+                tile_channels := channels
+                tile_stride := dw * channels
+                need_free := false
+                
+                if cached != nil {
+                    tile_pixels = cached.pixels
+                    tile_stride = cached.stride
+                } else {
+                    // Render source page (via pdf_render_page)
+                    pdf_path := reg.entries[int(insts[i].op_id)].pdf_path
+                    page_idx := int(reg.entries[int(insts[i].op_id)].page_idx)
+                    
+                    src_img: Img
+                    if pdf_render_page(pdf_path, page_idx, 1.0, &src_img) != 0 { continue }
+                    
+                    // Scale to tile size
+                    scaled: Img
+                    scaled.w = dw
+                    scaled.h = dh
+                    scaled.channels = channels
+                    scaled.stride = dw * channels
+                    scaled.pixels = make([]u8, dw * dh * channels)
+                    
+                    if channels == 3 && src_img.channels == 3 {
+                        img_resize_area(&src_img, &scaled, dw, dh)
+                    } else {
+                        gray_needed := src_img.w * src_img.h
+                        if gray_needed > gray_scratch_cap {
+                            delete(gray_scratch)
+                            gray_scratch = make([]u8, gray_needed)
+                            gray_scratch_cap = gray_needed
+                        }
+                        gray_scratch_img.w = src_img.w
+                        gray_scratch_img.h = src_img.h
+                        gray_scratch_img.stride = src_img.w
+                        gray_scratch_img.channels = 1
+                        gray_scratch_img.pixels = gray_scratch[:gray_needed]
+                        img_to_gray(&src_img, &gray_scratch_img)
+                        img_resize_area(&gray_scratch_img, &scaled, dw, dh)
+                    }
+                    img_free(&src_img)
+                    
+                    // Cache the tile
+                    atlas_insert(&atlas, int(insts[i].op_id), dw, dh, scaled.pixels, channels, scaled.stride)
+                    
+                    tile_pixels = scaled.pixels
+                    tile_stride = scaled.stride
+                    need_free = true
+                }
+                
+                // Blit to canvas
+                sy0 := int(insts[i].y)
+                sx0 := int(insts[i].x)
+                for yy in 0 ..< dh {
+                    dst_y := sy0 + yy
+                    if dst_y < 0 || dst_y >= height { continue }
+                    copy_x := sx0
+                    copy_src_x := 0
+                    copy_w := dw
+                    if copy_x < 0 { copy_src_x = -copy_x; copy_w += copy_x; copy_x = 0 }
+                    if copy_x + copy_w > width { copy_w = width - copy_x }
+                    if copy_w > 0 {
+                        copy_bytes := copy_w * tile_channels
+                        canvas_off := (dst_y * width + copy_x) * channels
+                        tile_off := yy * tile_stride + copy_src_x * tile_channels
+                        if canvas_off + copy_bytes <= len(canvas) && tile_off + copy_bytes <= len(tile_pixels) {
+                            copy(canvas[canvas_off:], tile_pixels[tile_off:])
+                        }
+                    }
+                }
+                
+                if need_free { delete(tile_pixels) }
             }
-            thread_pool_wait(pool)
-            delete(contexts)
         }
         
         frames_done += 1

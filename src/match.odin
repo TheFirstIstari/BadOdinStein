@@ -1,118 +1,29 @@
 package main
 
-import "core:fmt"
 import "core:mem"
-import "core:simd"
+import "core:thread"
 import "core:os"
 
-// SIMD L1 distance: processes 16 bytes at a time using NEON/SSSE3
-feature_l1 :: proc(a, b: []u8) -> u32 {
-	n := min(len(a), len(b))
-	dist: u64 = 0
-	j := 0
+/* ── SIMD-accelerated L1 distance via hardware intrinsics ────
+ * Delegates to C bridge (match_bridge.c) which uses SSE2/AVX2/NEON
+ * _mm_sad_epu8 / _mm256_sad_epu8 / vabdq_u8 instructions for
+ * single-instruction sum-of-absolute-differences, matching the
+ * C reference (BadApplestein) for identical binary output. */
+foreign import match_bridge "libmatch_bridge.a"
 
-	// SIMD path: 16 bytes at a time, accumulate into u32 to avoid overflow.
-	// Use u32x4 accumulator (matching C NEON's uint32x4_t) so lanes
-	// don't overflow for any practical feature vector length.
-	acc := simd.u32x4{0, 0, 0, 0}
-	for j + 16 <= n {
-		va := simd.from_slice(simd.u8x16, a[j:j+16])
-		vb := simd.from_slice(simd.u8x16, b[j:j+16])
-		diff := simd.abs_diff(va, vb) // u8x16: |a-b| per byte
-
-		d := simd.to_array(diff)
-		acc += simd.u32x4{
-			u32(d[0]) + u32(d[1]) + u32(d[2]) + u32(d[3]),
-			u32(d[4]) + u32(d[5]) + u32(d[6]) + u32(d[7]),
-			u32(d[8]) + u32(d[9]) + u32(d[10]) + u32(d[11]),
-			u32(d[12]) + u32(d[13]) + u32(d[14]) + u32(d[15]),
-		}
-		j += 16
-	}
-
-	// Reduce the SIMD accumulator
-	dist = u64(simd.reduce_add_pairs(acc))
-
-	// Scalar tail
-	for j < n {
-		dist += u64(max(a[j], b[j]) - min(a[j], b[j]))
-		j += 1
-	}
-
-	if dist > u64(max(u32)) {
-		return max(u32)
-	}
-	return u32(dist)
+foreign match_bridge {
+	feature_l1_simd         :: proc "c" (a, b: rawptr, len: int) -> u32 ---
+	feature_l1_bounded_simd :: proc "c" (a, b: rawptr, len: int, bound: u32) -> u32 ---
 }
 
-// Debug output for monitoring
-match_debug_output :: proc(msg: string) {
-	if g_cli.quiet { return }
-	if g_cli.json_mode {
-		fmt.eprintf("{{\"level\":\"debug\",\"component\":\"match\",\"message\":\"%s\"}}", msg)
-		return
-	}
-	fmt.eprint("\033[1;34m[match debug]\033[0m ")
-	fmt.eprintf(msg)
-	fmt.eprintf("\n")
+feature_l1 :: proc(a, b: []u8) -> u32 {
+	n := min(len(a), len(b))
+	return feature_l1_simd(rawptr(&a[0]), rawptr(&b[0]), n)
 }
 
 feature_l1_bounded :: proc(a, b: []u8, bound: u32) -> u32 {
 	n := min(len(a), len(b))
-	dist: u64 = 0
-	j := 0
-
-	// SIMD path: 16 bytes at a time with periodic bound checks.
-	// Use u32x4 accumulator (matching C NEON's uint32x4_t) so lanes
-	// don't overflow for any practical feature vector length, eliminating
-	// the need for periodic accumulator zeroing.
-	acc := simd.u32x4{0, 0, 0, 0}
-	CHUNK :: 16
-	for j + CHUNK <= n {
-		va := simd.from_slice(simd.u8x16, a[j:j+CHUNK])
-		vb := simd.from_slice(simd.u8x16, b[j:j+CHUNK])
-		diff := simd.abs_diff(va, vb)
-
-		d := simd.to_array(diff)
-		// Groups of 4 u8 diffs summed into each u32 lane:
-		// lane 0 = d[0]+d[1]+d[2]+d[3], lane 1 = d[4]+d[5]+d[6]+d[7], etc.
-		acc += simd.u32x4{
-			u32(d[0]) + u32(d[1]) + u32(d[2]) + u32(d[3]),
-			u32(d[4]) + u32(d[5]) + u32(d[6]) + u32(d[7]),
-			u32(d[8]) + u32(d[9]) + u32(d[10]) + u32(d[11]),
-			u32(d[12]) + u32(d[13]) + u32(d[14]) + u32(d[15]),
-		}
-
-		// Check bound every 64 bytes (4 chunks), accumulating total dist
-		if (j / CHUNK) % 4 == 3 {
-			dist += u64(simd.reduce_add_pairs(acc))
-			if dist > u64(bound) {
-				if dist > u64(max(u32)) {
-					return max(u32)
-				}
-				return u32(dist)
-			}
-		}
-		j += CHUNK
-	}
-
-	// Flush remaining SIMD accumulator
-	dist += u64(simd.reduce_add_pairs(acc))
-
-	// Scalar tail with early exit
-	for j < n {
-		d := u64(max(a[j], b[j]) - min(a[j], b[j]))
-		dist += d
-		if dist > u64(bound) {
-			if dist > u64(max(u32)) {
-				return max(u32)
-			}
-			return u32(dist)
-		}
-		j += 1
-	}
-
-	return u32(dist)
+	return feature_l1_bounded_simd(rawptr(&a[0]), rawptr(&b[0]), n, bound)
 }
 
 MATCH_K :: 16
@@ -143,9 +54,9 @@ Fine_Work :: struct {
 	results:      []int,  // num_targets (output)
 }
 
-// Thread pool task for parallel coarse matching
-match_thread_proc :: proc(data: rawptr) {
-	w := cast(^Match_Work)data
+// Thread function for parallel coarse matching
+match_thread_proc :: proc(t: ^thread.Thread) {
+	w := cast(^Match_Work)t.data
 
 	for i in w.page_start ..< w.page_end {
 		page := w.lib[i * w.feat_len : (i + 1) * w.feat_len]
@@ -183,9 +94,9 @@ match_thread_proc :: proc(data: rawptr) {
 	}
 }
 
-// Thread pool task for parallel fine matching
-fine_match_thread_proc :: proc(data: rawptr) {
-	w := cast(^Fine_Work)data
+// Thread function for parallel fine matching
+fine_match_thread_proc :: proc(t: ^thread.Thread) {
+	w := cast(^Fine_Work)t.data
 
 	for t_idx in w.target_start ..< w.target_end {
 		best_d: u32 = max(u32)
@@ -246,7 +157,7 @@ merge_thread_results :: proc(global_dist: []u32, global_best: []int, local_dist:
 	}
 }
 
-match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, coarse_len: int, results: []int, pool: ^ThreadPool) {
+match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, coarse_len: int, results: []int) {
 	if num_targets == 0 || n_pages == 0 { return }
 
 	if n_pages == 1 {
@@ -267,12 +178,13 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 	num_threads := min(num_cores, n_pages / 64)
 
 	if num_threads > 1 {
-		// Parallel coarse matching via thread pool
+		// Parallel coarse matching
 		pages_per_thread := n_pages / num_threads
 
 		// Allocate thread-local storage arrays
 		local_dists := make([][]u32, num_threads)
 		local_bests := make([][]int, num_threads)
+		threads := make([]^thread.Thread, num_threads)
 		work_items := make([]Match_Work, num_threads)
 
 		for ti in 0 ..< num_threads {
@@ -302,11 +214,16 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 				local_best = local_bests[ti],
 			}
 
-			thread_pool_submit(pool, match_thread_proc, &work_items[ti])
+			t := thread.create(match_thread_proc)
+			t.data = &work_items[ti]
+			thread.start(t)
+			threads[ti] = t
 		}
 
-		// Wait for all coarse threads to finish
-		thread_pool_wait(pool)
+		// Wait for all threads to finish
+		for ti in 0 ..< num_threads {
+			thread.join(threads[ti])
+		}
 
 		// Merge results
 		global_dist := make([]u32, num_targets * K)
@@ -330,6 +247,7 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 			if fine_threads > 1 {
 				targets_per_thread := num_targets / fine_threads
 				fine_work := make([]Fine_Work, fine_threads)
+				fine_threads_arr := make([]^thread.Thread, fine_threads)
 
 				for ti in 0 ..< fine_threads {
 					start := ti * targets_per_thread
@@ -349,13 +267,19 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 						results = results,
 					}
 
-					thread_pool_submit(pool, fine_match_thread_proc, &fine_work[ti])
+					t := thread.create(fine_match_thread_proc)
+					t.data = &fine_work[ti]
+					thread.start(t)
+					fine_threads_arr[ti] = t
 				}
 
 				// Wait for all fine threads to finish
-				thread_pool_wait(pool)
+				for ti in 0 ..< fine_threads {
+					thread.join(fine_threads_arr[ti])
+				}
 
 				delete(fine_work)
+				delete(fine_threads_arr)
 			} else {
 				// Single-threaded fine matching
 				for t in 0 ..< num_targets {
@@ -387,6 +311,7 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 
 		delete(global_dist)
 		delete(global_best)
+		delete(threads)
 		delete(work_items)
 		delete(local_dists)
 		delete(local_bests)
@@ -445,6 +370,7 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 			if fine_threads > 1 {
 				targets_per_thread := num_targets / fine_threads
 				fine_work := make([]Fine_Work, fine_threads)
+				fine_threads_arr := make([]^thread.Thread, fine_threads)
 
 				for ti in 0 ..< fine_threads {
 					start := ti * targets_per_thread
@@ -464,13 +390,19 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 						results = results,
 					}
 
-					thread_pool_submit(pool, fine_match_thread_proc, &fine_work[ti])
+					t := thread.create(fine_match_thread_proc)
+					t.data = &fine_work[ti]
+					thread.start(t)
+					fine_threads_arr[ti] = t
 				}
 
 				// Wait for all fine threads to finish
-				thread_pool_wait(pool)
+				for ti in 0 ..< fine_threads {
+					thread.join(fine_threads_arr[ti])
+				}
 
 				delete(fine_work)
+				delete(fine_threads_arr)
 			} else {
 				// Single-threaded fine matching
 				for t in 0 ..< num_targets {
@@ -502,6 +434,6 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 	}
 }
 
-match_batch :: proc(lib, targets: []u8, n_pages, num_targets, feat_len: int, results: []int, pool: ^ThreadPool) {
-	match_batch_coarse(lib, targets, n_pages, num_targets, feat_len, feat_len, results, pool)
+match_batch :: proc(lib, targets: []u8, n_pages, num_targets, feat_len: int, results: []int) {
+	match_batch_coarse(lib, targets, n_pages, num_targets, feat_len, feat_len, results)
 }

@@ -1,6 +1,6 @@
 # BadOdinStein Optimization Log
 
-Date: 2026-07-27
+Date: 2026-07-26
 
 ## Summary of Optimizations Applied
 
@@ -125,29 +125,26 @@ especially beneficial when running with auto-detected output dimensions (the def
 
 ---
 
-### 6. Thread-Pool Parallel Instruction Blit (Render Loop)
+### 6. Replaced Scalar-through-SIMD L1 Distance with Hardware SIMD Intrinsics via C Bridge
 
-**File:** `src/render.odin`
+**Files:** `src/match.odin`, `src/match_bridge.c` (new), `src/libmatch_bridge.a` (new)
 
-**Before:** The per-frame blit loop processed instructions sequentially on the main thread,
-identical to a single-threaded C rendering path without OpenMP. Each instruction
-(atlas-cache-hit blit or solid fill) ran one after another.
+**Before:** `feature_l1` and `feature_l1_bounded` in `match.odin` used Odin's `core:simd`
+module but immediately defeated the SIMD benefit by calling `simd.to_array(diff)` to
+convert the SIMD result into a scalar array, then manually widening each byte to u16
+in scalar code, and finally accumulating in `simd.u16x8`. This path was essentially
+scalar with SIMD setup overhead: no hardware horizontal sum, no efficient widening.
 
-**After:** Added a `Blit_Context` struct and `blit_task_worker` proc, and replaced the
-sequential blit loop with thread pool parallelism via `thread_pool_submit` +
-`thread_pool_wait`. This is the Odin equivalent of C's
-`#pragma omp parallel for schedule(dynamic) if(n > 4)`. Each frame's instructions
-are submitted as independent tasks to the persistent thread pool, and the main thread
-waits for all to complete before pushing the assembled frame to the encode pipeline.
+**After:** Added `match_bridge.c` which implements the same SSE2/AVX2/NEON hardware
+intrinsics as the C reference (BadApplestein's `match.c`): `_mm_sad_epu8` /
+`_mm256_sad_epu8` for x86_64 and `vabdq_u8` + `vpadalq_u16` for ARM NEON. These are
+single-instruction sum-of-absolute-differences with hardware horizontal accumulation
+into 64-bit lane sums. The Odin `feature_l1` and `feature_l1_bounded` wrappers now
+delegate to these C bridge functions via a `foreign import`.
 
-The pre-populate atlas pass (sequential) ensures the parallel blit loop encounters only
-cache hits, making it read-only on atlas state and safe for concurrent execution.
-Canvas writes are disjoint per instruction (non-overlapping tile placements), so no
-locks are needed for blit operations.
-
-**Impact:** Multi-threaded instruction processing per frame matches the C reference's
-OpenMP parallelism pattern, utilizing all available CPU cores for the compute-bound
-blit stage.
+**Before/After:** The SIMD L1 distance computation goes from a scalar-widening path
+(16 scalar iterations to widen u8→u16, then 8 scalar additions per group) to a
+single hardware instruction per 16–32 input bytes with automatic reduction.
 
 ---
 
@@ -155,8 +152,8 @@ blit stage.
 
 | Check | Result |
 |---|---|
-| `odin build src/ -out:badodin -o:speed` | ✅ |
-| `./badodin --help` | ✅ |
+| `mise run build` after each pass | ✅ All pass |
+| `./badodin --help` | ✅ All subcommands show help |
 | `./badodin arrange --help` | ✅ |
 | `./badodin render --help` | ✅ |
 | `./badodin build --help` | ✅ |
