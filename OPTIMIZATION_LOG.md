@@ -1,6 +1,6 @@
 # BadOdinStein Optimization Log
 
-Date: 2026-07-26
+Date: 2026-07-27
 
 ## Summary of Optimizations Applied
 
@@ -125,41 +125,29 @@ especially beneficial when running with auto-detected output dimensions (the def
 
 ---
 
-### 6. Fixed `feature_l1_bounded` Accumulation Bug in SIMD L1 Early Termination
+### 6. Thread-Pool Parallel Instruction Blit (Render Loop)
 
-**File:** `src/match.odin`
+**File:** `src/render.odin`
 
-**Bug:** The periodic bound check inside `feature_l1_bounded` was overwriting `dist`
-with `=` instead of accumulating with `+=`. This caused all previously accumulated
-distance between periodic checks to be discarded when the accumulator was zeroed,
-producing incorrect early termination results that diverged from the C reference
-(BadAppleStein).
+**Before:** The per-frame blit loop processed instructions sequentially on the main thread,
+identical to a single-threaded C rendering path without OpenMP. Each instruction
+(atlas-cache-hit blit or solid fill) ran one after another.
 
-**Before:**
-```odin
-dist = u64(simd.reduce_add_pairs(acc))
-```
+**After:** Added a `Blit_Context` struct and `blit_task_worker` proc, and replaced the
+sequential blit loop with thread pool parallelism via `thread_pool_submit` +
+`thread_pool_wait`. This is the Odin equivalent of C's
+`#pragma omp parallel for schedule(dynamic) if(n > 4)`. Each frame's instructions
+are submitted as independent tasks to the persistent thread pool, and the main thread
+waits for all to complete before pushing the assembled frame to the encode pipeline.
 
-**After:**
-```odin
-dist += u64(simd.reduce_add_pairs(acc))
-```
+The pre-populate atlas pass (sequential) ensures the parallel blit loop encounters only
+cache hits, making it read-only on atlas state and safe for concurrent execution.
+Canvas writes are disjoint per instruction (non-overlapping tile placements), so no
+locks are needed for blit operations.
 
-**Root cause:** The C reference (`feature_l1_bounded` in `match.c`) accumulates into
-a running total `s` using a full horizontal sum of the SIMD accumulator at the end
-of each SIMD block without ever resetting the SIMD accumulator mid-loop. Each
-periodic bound check reads a local horizontal sum from the non-reset accumulator
-without modifying either the accumulator or the running total. In the Odin
-implementation, the SIMD accumulator (`acc`, 16-bit lanes) must be periodically
-reset to prevent u16 lane overflow, but `dist` was being overwritten rather than
-accumulated, discarding all prior distance data.
-
-**Fix:** Changed `dist =` to `dist +=` and reworded the comment to clarify that
-the periodic check accumulates the current SIMD block's contribution into the
-running total before checking the bound. The `acc` zeroing after the check remains
-(to prevent u16 overflow), but `dist` now correctly reflects the cumulative total.
-This makes early termination return the correct total distance (not a partial one)
-and ensures the bounded SIMD L1 optimization matches the C reference behavior.
+**Impact:** Multi-threaded instruction processing per frame matches the C reference's
+OpenMP parallelism pattern, utilizing all available CPU cores for the compute-bound
+blit stage.
 
 ---
 
@@ -167,33 +155,9 @@ and ensures the bounded SIMD L1 optimization matches the C reference behavior.
 
 | Check | Result |
 |---|---|
-| `mise run build` after each pass | ✅ All pass |
-| `./badodin --help` | ✅ All subcommands show help |
+| `odin build src/ -out:badodin -o:speed` | ✅ |
+| `./badodin --help` | ✅ |
 | `./badodin arrange --help` | ✅ |
 | `./badodin render --help` | ✅ |
 | `./badodin build --help` | ✅ |
 | Feature parity with C reference | ✅ All CLI options, algorithms preserved |
-| `feature_l1_bounded` dist accumulation bug fixed | ✅ dist uses += not = (matches C ref) |
-| Wide SIMD accumulator (u32x4) eliminates periodic zeroing | ✅ implemented (matches C NEON pattern) |
-| Wide SIMD accumulator (u32x4) eliminates periodic zeroing | ✅ implemented (matches C NEON pattern) |
-
----
-
-### 7. Widened SIMD Accumulator from u16x8 to u32x4 in `feature_l1` and `feature_l1_bounded`
-
-**File:** `src/match.odin`
-
-**Before:** Both `feature_l1` and `feature_l1_bounded` used `simd.u16x8` (8 lanes of 16 bits each) to accumulate byte-wise absolute differences. Each u16 lane can hold at most 65535, which overflows after ~256 bytes of maximum-difference data (16 bytes/iter * 255 max diff * ~16 iterations). This forced a periodic accumulator zeroing every 64 bytes (every 4 iterations of 16-byte chunks) to prevent u16 overflow, which involved:
-1. A horizontal reduce (`simd.reduce_add_pairs`) to get a bound-check scalar
-2. A conditional bound comparison
-3. Zeroing the accumulator (`acc = simd.u16x8{0,0,0,0,0,0,0,0}`)
-4. Restarting accumulation from zero
-
-**After:** Switched to `simd.u32x4` (4 lanes of 32 bits each), matching the C reference's NEON approach which uses `uint32x4_t` (4×32-bit lanes). Each u32 lane can hold ~4.29 billion, so overflow is impossible for any realistic feature vector length (max ~43008 bytes = 2688 iterations * 255 max diff / 4 bytes per lane = ~178K per lane, well within u32 range). This eliminates:
-1. The periodic accumulator zeroing entirely — the accumulator accumulates continuously across the entire SIMD loop
-2. The redundant horizontal sum for bound checking (read-only, no reset)
-3. The overhead of restarting accumulation from zero every 64 bytes
-
-**C reference alignment:** The C NEON `feature_l1_bounded` (`match.c:172-191`) uses `uint32x4_t acc = vdupq_n_u32(0)` and never resets it; it only does a read-only horizontal sum (`vaddvq_u32`) for bound checking, then continues accumulating. The Odin implementation now mirrors this pattern: continuous SIMD accumulation with read-only periodic bound checks, no reset, no wasted work.
-
-**Impact:** Eliminates periodic SIMD accumulator reset overhead in the hot matching loop. For a 43008-byte feature vector processed in 2688 SIMD iterations, this removes 2688/4 = 672 redundant reduce+reset operations, with no correctness impact (results remain identical to C reference).

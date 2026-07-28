@@ -6,7 +6,6 @@ import "core:strings"
 import "core:mem"
 import "core:time"
 import "core:math"
-import "core:thread"
 import "core:simd"
 
 CELL :: 8
@@ -288,7 +287,7 @@ write_manifest :: proc(path: string, fw, fh: int, manifest: []Inst, n: int) {
 	os.write(f, mbuf)
 }
 
-// Thread context for parallel feature extraction
+// Thread pool task for parallel feature extraction
 Feat_Work :: struct {
 	specs:        []TileSpec,
 	gray:         []u8,
@@ -321,8 +320,8 @@ Feat_Work :: struct {
 	ccache_cap:   int,
 }
 
-feat_thread_proc :: proc(t: ^thread.Thread) {
-	w := cast(^Feat_Work)t.data
+feat_thread_proc :: proc(data: rawptr) {
+	w := cast(^Feat_Work)data
 
 	for i in w.spec_start ..< w.spec_end {
 		sp := w.specs[i]
@@ -355,7 +354,7 @@ feat_thread_proc :: proc(t: ^thread.Thread) {
 
 solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, color_channels, w, h: int,
                    db: ^FeatureDB, reg: ^Registry, pid_white, pid_black, max_block, hero_min: int,
-                   manifest: []Inst, nout: ^int, tiles: []u8, ntiles: ^int, t: ^Timings) {
+                   manifest: []Inst, nout: ^int, tiles: []u8, ntiles: ^int, t: ^Timings, pool: ^ThreadPool) {
 	CELL_SIZE :: 8
 
 	if s.cap_w < w || s.cap_h < h {
@@ -503,7 +502,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 			N := s.g_scales[0]
 			maxv := (1 << u32(db.G)) - 1
 
-			// Parallel feature extraction using threads
+			// Parallel feature extraction using thread pool
 			num_cores := os.get_processor_core_count()
 			if num_cores <= 0 { num_cores = 1 }
 			num_feat_threads := min(num_cores, n_specs / 32)
@@ -511,7 +510,6 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 			if num_feat_threads > 1 {
 				specs_per_thread := n_specs / num_feat_threads
 				feat_work := make([]Feat_Work, num_feat_threads)
-				feat_threads := make([]^thread.Thread, num_feat_threads)
 
 				for ti in 0 ..< num_feat_threads {
 					start := ti * specs_per_thread
@@ -554,22 +552,19 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 						ccache_cap = s.ccache_cap,
 					}
 
-					th := thread.create(feat_thread_proc)
-					th.data = &feat_work[ti]
-					thread.start(th)
-					feat_threads[ti] = th
+					thread_pool_submit(pool, feat_thread_proc, &feat_work[ti])
 				}
 
-				// Wait for all threads
+				// Wait for all feature extraction threads to finish
+				thread_pool_wait(pool)
+
 				for ti in 0 ..< num_feat_threads {
-					thread.join(feat_threads[ti])
 					delete(feat_work[ti].crop_buf)
 					delete(feat_work[ti].coarse_feat)
 					feature_bufs_cleanup(&feat_work[ti].feat_bufs)
 				}
 
 				delete(feat_work)
-				delete(feat_threads)
 			} else {
 				// Single-threaded fallback
 				coarse_feat := make([]u8, N * N)
@@ -641,7 +636,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 					s.results = make([]int, nt)
 					s.result_cap = nt
 				}
-				match_batch_coarse(db.data, tiles[:nt * feat_len], db.n_pages, nt, feat_len, coarse_len, s.results[:nt])
+				match_batch_coarse(db.data, tiles[:nt * feat_len], db.n_pages, nt, feat_len, coarse_len, s.results[:nt], pool)
 				for i in 0 ..< nt {
 					pid := s.results[i]
 					midx := s.specs[s.miss_idx[i]].manifest_idx
@@ -668,6 +663,12 @@ arrange_main :: proc() {
 	state: Arrange_State
 	arrange_init(&state)
 	defer arrange_cleanup(&state)
+
+	num_cores := os.get_processor_core_count()
+	if num_cores <= 0 { num_cores = 1 }
+	num_threads := min(num_cores, 64)
+	pool := thread_pool_create(num_threads)
+	defer thread_pool_destroy(pool)
 
 	video_path := cli_opt_str("video", "")
 	feat_path := cli_opt_str("features", "features.bin")
@@ -786,7 +787,7 @@ arrange_main :: proc() {
 		nt: int
 		solve_full(&state, gray.pixels, frame.pixels, frame.stride, frame.channels, fw, fh,
 		           &db, &reg, pid_white, pid_black, max_block, hero_min,
-		           manifest[:manifest_cap], &n, tiles[:db.feat_len * manifest_cap], &nt, &t)
+		           manifest[:manifest_cap], &n, tiles[:db.feat_len * manifest_cap], &nt, &t, pool)
 
 		for k in 0 ..< n { if manifest[k].op_id >= 0 { total_tiles += 1 } }
 
