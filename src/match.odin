@@ -32,9 +32,10 @@ MATCH_K :: 16
 Match_Work :: struct {
 	lib:          []u8,
 	targets:      []u8,
-	page_start:   int,
-	page_end:     int,
+	target_start: int,
+	target_end:   int,
 	num_targets:  int,
+	n_pages:      int,
 	feat_len:     int,
 	coarse_len:   int,
 	K:            int,
@@ -55,21 +56,22 @@ Fine_Work :: struct {
 }
 
 // Thread function for parallel coarse matching
+// Each thread processes one target against ALL library pages for better cache locality.
 match_thread_proc :: proc(t: ^thread.Thread) {
 	w := cast(^Match_Work)t.data
 
-	for i in w.page_start ..< w.page_end {
-		page := w.lib[i * w.feat_len : (i + 1) * w.feat_len]
+	for t_idx in w.target_start ..< w.target_end {
+		target := w.targets[t_idx * w.feat_len : (t_idx + 1) * w.feat_len]
+		coarse_target := target[:w.coarse_len]
 
-		for t_idx in 0 ..< w.num_targets {
-			target := w.targets[t_idx * w.feat_len : (t_idx + 1) * w.feat_len]
-			coarse_target := target[:w.coarse_len]
+		kd := w.local_dist[t_idx * w.K :]
+		kb := w.local_best[t_idx * w.K :]
+
+		for i in 0 ..< w.n_pages {
+			page := w.lib[i * w.feat_len : (i + 1) * w.feat_len]
 			coarse_page := page[:w.coarse_len]
 
 			d := feature_l1(coarse_page, coarse_target)
-
-			kd := w.local_dist[t_idx * w.K :]
-			kb := w.local_best[t_idx * w.K :]
 
 			if d >= kd[w.K - 1] { continue }
 
@@ -175,11 +177,12 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 	// Use threading for coarse matching if we have enough work
 	num_cores := os.get_processor_core_count()
 	if num_cores <= 0 { num_cores = 1 }
-	num_threads := min(num_cores, n_pages / 64)
+	num_threads := min(num_cores, num_targets / 64)
 
 	if num_threads > 1 {
-		// Parallel coarse matching
-		pages_per_thread := n_pages / num_threads
+		// Parallel coarse matching — distribute targets across threads for better cache locality.
+		// Each thread processes its assigned targets against all library pages.
+		targets_per_thread := num_targets / num_threads
 
 		// Allocate thread-local storage arrays
 		local_dists := make([][]u32, num_threads)
@@ -188,10 +191,10 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 		work_items := make([]Match_Work, num_threads)
 
 		for ti in 0 ..< num_threads {
-			start := ti * pages_per_thread
-			end := start + pages_per_thread
+			start := ti * targets_per_thread
+			end := start + targets_per_thread
 			if ti == num_threads - 1 {
-				end = n_pages
+				end = num_targets
 			}
 
 			local_dists[ti] = make([]u32, num_targets * K)
@@ -204,9 +207,10 @@ match_batch_coarse :: proc(lib, targets: []u8, n_pages, num_targets, feat_len, c
 			work_items[ti] = Match_Work {
 				lib = lib,
 				targets = targets,
-				page_start = start,
-				page_end = end,
+				target_start = start,
+				target_end = end,
 				num_targets = num_targets,
+				n_pages = n_pages,
 				feat_len = feat_len,
 				coarse_len = coarse_len,
 				K = K,

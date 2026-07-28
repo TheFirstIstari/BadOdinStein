@@ -123,6 +123,22 @@ parse per render invocation.
 **Impact:** One fewer file I/O operation + one fewer full manifest parse per render call,
 especially beneficial when running with auto-detected output dimensions (the default case).
 
+### 6. Parallelized Coarse Matching Over Targets Instead of Pages
+
+**File:** `src/match.odin`
+
+**Before:** `match_batch_coarse` parallelized over library pages (outer loop). Each thread processed a subset of pages, iterating all targets per page. This meant every thread re-read the entire target buffer for every page it processed — poor cache locality and redundant target reads across threads.
+
+**After:** `match_batch_coarse` now parallelizes over target tiles (outer loop). Each thread processes one full target against all library pages. Since each target is small (one tile's feature vector), it stays hot in L1/L2 cache across all page comparisons. Thread-local top-K results are merged into the global top-K using the existing `merge_thread_results` function.
+
+**Key changes:**
+- `Match_Work` struct: replaced `page_start/page_end` with `target_start/target_end`, added `n_pages` field
+- `match_thread_proc`: outer loop over `target_start..target_end`, inner loop over all `n_pages`
+- `match_batch_coarse`: thread distribution divides targets (`num_targets / 64`) instead of pages (`n_pages / 64`)
+- `match_batch_coarse`: `Match_Work` initialization passes `target_start`/`target_end` and `n_pages`
+
+**Impact:** Better L1/L2 cache utilization per thread — each target fits in cache while all pages are scanned. Aligned with the C reference (BadAppleStein) and BadZiggle parallelization strategy.
+
 ---
 
 ### 6. Replaced Scalar-through-SIMD L1 Distance with Hardware SIMD Intrinsics via C Bridge
