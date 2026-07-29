@@ -85,8 +85,8 @@ write_registry :: proc(path: string, paths: []string, page_idxs: []int, nreg: in
 build_main :: proc() {
     args := os.args
     src := ""
-    if len(args) >= 2 {
-        src = args[1]
+    if len(args) >= 3 {
+        src = args[2]
     }
     
     if cli_has("help") || cli_has("h") || len(src) == 0 {
@@ -124,7 +124,7 @@ build_main :: proc() {
         if color != 0 { feat_len += N * N * 3 }
     }
     
-    // Scan directory
+    // Scan directory (single pass: count sources, then process image entries)
     dir_handle, derr := os.open(src)
     if derr != nil { return }
     defer os.close(dir_handle)
@@ -140,12 +140,13 @@ build_main :: proc() {
     fb: Feat_Buf
     defer delete(fb.data)
     
-    total_sources := 0
     entries, dir_err := os.read_dir(dir_handle, -1, context.allocator)
     if dir_err != nil { os.close(dir_handle); return }
-    for entry in entries {
-        if entry.name[0] == '.' { continue }
-        full := fmt.tprintf("%s/%s", src, entry.name)
+    
+    total_sources := 0
+    for e in entries {
+        if e.name[0] == '.' { continue }
+        full := fmt.tprintf("%s/%s", src, e.name)
         if is_pdf_file(full) || is_img_file(full) {
             total_sources += 1
         }
@@ -158,17 +159,11 @@ build_main :: proc() {
     cli_info("sources: %d | G=%d edges=%d color=%d | feat_len=%d",
              total_sources, G, has_edges, color, feat_len)
     
-    // Re-scan and process
-    dir_handle2, derr2 := os.open(src)
-    if derr2 != nil { return }
-    defer os.close(dir_handle2)
-    
+    // Process sources from the already-read entries
     processed := 0
-    entries2, dir_err2 := os.read_dir(dir_handle2, -1, context.allocator)
-    if dir_err2 != nil { os.close(dir_handle2); return }
-    for entry in entries2 {
-        if entry.name[0] == '.' { continue }
-        full := fmt.tprintf("%s/%s", src, entry.name)
+    for e in entries {
+        if e.name[0] == '.' { continue }
+        full := fmt.tprintf("%s/%s", src, e.name)
         
         if is_img_file(full) {
             img: Img

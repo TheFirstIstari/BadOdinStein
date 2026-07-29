@@ -78,10 +78,10 @@ Mapped against BadApplestein's CLI (README.md + man/badapplestein.1 + man page s
 
 | File | Line | Finding |
 |---|---|---|
-| `build_library.odin` | 97–109 | **Buffer overrun on `feat_scales`**: Array declared as `[3]int` but loop allows `n_feat_scales` up to 16. Writing past the array corrupts adjacent memory. (`feat_scales[n_feat_scales]` for `n_feat_scales >= 3`) |
-| `build_library.odin` | 190 | **Slice past array end**: `feat_scales[:n_feat_scales]` creates a slice extending past the 3-element array when `n_feat_scales > 3`. Passed to `img_compute_feature_multires`, `write_features`, and elsewhere. |
-| `arrange.odin` | 386–412 | **`defer delete` inside loop**: `coarse_feat` allocated with `make([]u8, N*N)` per spec iteration inside `solve_full`. Odin defers to proc scope, not loop body — all deferred deletes reference the same variable, leaking intermediate allocations. |
-| `system_detect.odin` | 20–25 | **Memory leak on `stdout`**: `delete(stdout)` only called in the success branch. If `os.process_exec` fails or the command fails, `stdout` leaks. On non-macOS systems where `sysctl` doesn't exist, `os.process_exec` fails and `stdout` leaks on every call. |
+| `build_library.odin` | 97–109 | **Buffer overrun on `feat_scales`**: Array declared as `[3]int` but loop allows `n_feat_scales` up to 16. Writing past the array corrupts adjacent memory. (`feat_scales[n_feat_scales]` for `n_feat_scales >= 3`) — [FIXED] Array changed to `[16]int` |
+| `build_library.odin` | 190 | **Slice past array end**: `feat_scales[:n_feat_scales]` creates a slice extending past the 3-element array when `n_feat_scales > 3`. Passed to `img_compute_feature_multires`, `write_features`, and elsewhere. — [FIXED] Array is now `[16]int`, safe for max 16 scales |
+| `arrange.odin` | 386–412 | **`defer delete` inside loop**: `coarse_feat` allocated with `make([]u8, N*N)` per spec iteration inside `solve_full`. Odin defers to proc scope, not loop body — all deferred deletes reference the same variable, leaking intermediate allocations. — [FIXED] Restructured to allocate once per thread/managed explicitly |
+| `system_detect.odin` | 20–25 | **Memory leak on `stdout`**: `delete(stdout)` only called in the success branch. If `os.process_exec` fails or the command fails, `stdout` leaks. On non-macOS systems where `sysctl` doesn't exist, `os.process_exec` fails and `stdout` leaks on every call. — [FIXED] Changed to `defer delete(stdout)` before error checks |
 
 ### MEDIUM Severity
 

@@ -80,7 +80,6 @@ cli_opt_str :: proc(name, def: string) -> string {
 }
 
 cli_opt_int :: proc(name: string, def: int) -> int {
-	cached := false
 	v := cli_get(name, "")
 	if len(v) > 0 {
 		result, ok := strconv.parse_int(v)

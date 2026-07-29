@@ -9,9 +9,76 @@ import "core:time"
 import "core:thread"
 import "core:sync"
 import "core:sort"
+import "core:simd"
 
 MAX_INSTS :: 65536
 FRAME_QUEUE_SIZE :: 4
+
+// ── SIMD gray rendering helpers ─────────────────────────────────
+// Explicit SIMD operations for the 1-channel (grayscale) render path,
+// matching BadApplestein's SIMD-optimized img_to_gray approach.
+// These ensure consistent SIMD codegen across platforms instead of
+// relying solely on compiler auto-vectorization of memcpy/memset.
+
+SIMD_BYTES :: 16 // simd.u8x16 lane count
+
+// simd_zero_buffer fills `dst` with zeros using SIMD vector stores.
+// Falls back to scalar bytes at the tail.
+simd_zero_buffer :: proc(dst: []u8) {
+    if len(dst) == 0 { return }
+    n := len(dst)
+    i := 0
+    if n >= SIMD_BYTES {
+        zero_vec := simd.u8x16{}
+        #no_bounds_check for i + SIMD_BYTES <= n {
+            (^simd.u8x16)(&dst[i])^ = zero_vec
+            i += SIMD_BYTES
+        }
+    }
+    #no_bounds_check for i < n {
+        dst[i] = 0
+        i += 1
+    }
+}
+
+// simd_fill_buffer fills `dst` with `val` using SIMD broadcast+store.
+// Falls back to scalar bytes at the tail.
+simd_fill_buffer :: proc(dst: []u8, val: u8) {
+    if len(dst) == 0 { return }
+    n := len(dst)
+    i := 0
+    if n >= SIMD_BYTES {
+        fill_vec := simd.u8x16{val,val,val,val,val,val,val,val,val,val,val,val,val,val,val,val}
+        #no_bounds_check for i + SIMD_BYTES <= n {
+            (^simd.u8x16)(&dst[i])^ = fill_vec
+            i += SIMD_BYTES
+        }
+    }
+    #no_bounds_check for i < n {
+        dst[i] = val
+        i += 1
+    }
+}
+
+// simd_copy_buffer copies `src` to `dst` using SIMD load+store.
+// Both slices must have the same length.
+// Falls back to scalar copy at the tail.
+simd_copy_buffer :: proc(dst, src: []u8) {
+    n := len(dst)
+    if n != len(src) || n == 0 { return }
+    i := 0
+    if n >= SIMD_BYTES {
+        #no_bounds_check for i + SIMD_BYTES <= n {
+            vec := (^simd.u8x16)(&src[i])^
+            (^simd.u8x16)(&dst[i])^ = vec
+            i += SIMD_BYTES
+        }
+    }
+    #no_bounds_check for i < n {
+        dst[i] = src[i]
+        i += 1
+    }
+}
 
 // ── Atlas cache (tile-level caching) ──
 Atlas_Entry :: struct {
@@ -34,7 +101,7 @@ Atlas_Cache :: struct {
 }
 
 atlas_init :: proc(atlas: ^Atlas_Cache, budget: u64) {
-    atlas.capacity = 256
+    atlas.capacity = 65536 // large enough for thousands of unique (op_id,tw,th) combos
     atlas.entries = make([]Atlas_Entry, atlas.capacity)
     atlas.budget = budget
     atlas.enabled = budget > 0
@@ -61,7 +128,7 @@ atlas_lookup :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int) -> ^Atlas_Entry {
     if !atlas.enabled { return nil }
     h := atlas_hash(op_id, tw, th)
     for probe in 0 ..< atlas.capacity {
-        idx := int((h + u32(probe)) % u32(atlas.capacity))
+        idx := int((h + u32(probe)) & u32(atlas.capacity - 1))
         if atlas.entries[idx].valid == 0 { return nil }
         if atlas.entries[idx].valid == 2 { continue }
         if atlas.entries[idx].op_id == op_id &&
@@ -83,7 +150,7 @@ atlas_lookup_readonly :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int) -> ^Atlas
     if !atlas.enabled { return nil }
     h := atlas_hash(op_id, tw, th)
     for probe in 0 ..< atlas.capacity {
-        idx := int((h + u32(probe)) % u32(atlas.capacity))
+        idx := int((h + u32(probe)) & u32(atlas.capacity - 1))
         if atlas.entries[idx].valid == 0 { return nil }
         if atlas.entries[idx].valid == 2 { continue }
         if atlas.entries[idx].op_id == op_id &&
@@ -124,7 +191,7 @@ atlas_insert :: proc(atlas: ^Atlas_Cache, op_id, tw, th: int, src_pixels: []u8, 
     h := atlas_hash(op_id, tw, th)
     tombstone_idx := -1
     for probe in 0 ..< atlas.capacity {
-        idx := int((h + u32(probe)) % u32(atlas.capacity))
+        idx := int((h + u32(probe)) & u32(atlas.capacity - 1))
         if atlas.entries[idx].valid == 0 || atlas.entries[idx].valid == 2 {
             use_idx := idx if tombstone_idx < 0 else tombstone_idx
             atlas.entries[use_idx].op_id = op_id
@@ -389,6 +456,141 @@ cmp_manifest :: proc(a, b: string) -> int {
     return sort.compare_strings(a, b)
 }
 
+// ── Parallel blit worker ──
+
+Blit_Work :: struct {
+    canvas:   []u8,
+    width:    int,
+    height:   int,
+    channels: int,
+    insts:    []Inst,
+    n:        int,
+    atlas:    ^Atlas_Cache,
+    reg:      ^Registry,
+    next_idx: u32,
+}
+
+blit_do_work :: proc(w: ^Blit_Work) {
+    for {
+        idx := int(sync.atomic_add(&w.next_idx, 1))
+        if idx >= w.n { break }
+
+        if w.insts[idx].op_id < 0 {
+            // Solid fill
+            val: u8 = 0
+            if w.insts[idx].op_id == -2 { val = 255 }
+            sy0 := int(w.insts[idx].y)
+            sx0 := int(w.insts[idx].x)
+            for yy in 0 ..< int(w.insts[idx].h) {
+                dst_y := sy0 + yy
+                if dst_y < 0 || dst_y >= w.height { continue }
+                fill_x := sx0
+                fill_w := int(w.insts[idx].w)
+                if fill_x < 0 { fill_w += fill_x; fill_x = 0 }
+                if fill_x + fill_w > w.width { fill_w = w.width - fill_x }
+                if fill_w > 0 {
+                    if w.channels == 3 {
+                        mem.set(raw_data(w.canvas[(dst_y * w.width + fill_x) * 3 : (dst_y * w.width + fill_x + fill_w) * 3]), val, fill_w * 3)
+                    } else {
+                        simd_fill_buffer(w.canvas[dst_y * w.width + fill_x : dst_y * w.width + fill_x + fill_w], val)
+                    }
+                }
+            }
+            continue
+        }
+
+        if int(w.insts[idx].op_id) >= w.reg.n { continue }
+
+        dw := int(w.insts[idx].w)
+        dh := int(w.insts[idx].h)
+        if dw <= 0 || dh <= 0 { continue }
+
+        // Check atlas cache
+        cached := atlas_lookup(w.atlas, int(w.insts[idx].op_id), dw, dh)
+
+        tile_pixels: []u8 = nil
+        tile_channels := w.channels
+        tile_stride := dw * w.channels
+        need_free := false
+
+        if cached != nil {
+            tile_pixels = cached.pixels
+            tile_stride = cached.stride
+        } else {
+            // Cache miss — pre-population handles all entries, but handle for
+            // correctness with per-thread local scratch buffers.
+            pdf_path := w.reg.entries[int(w.insts[idx].op_id)].pdf_path
+            page_idx := int(w.reg.entries[int(w.insts[idx].op_id)].page_idx)
+
+            src_img: Img
+            if pdf_render_page(pdf_path, page_idx, 1.0, &src_img) != 0 { continue }
+
+            scaled: Img
+            scaled.w = dw
+            scaled.h = dh
+            scaled.channels = w.channels
+            scaled.stride = dw * w.channels
+            scaled.pixels = make([]u8, dw * dh * w.channels)
+
+            if w.channels == 3 && src_img.channels == 3 {
+                img_resize_area(&src_img, &scaled, dw, dh)
+            } else {
+                gray_needed := src_img.w * src_img.h
+                local_gray := make([]u8, gray_needed)
+                local_gray_img := Img {
+                    w        = src_img.w,
+                    h        = src_img.h,
+                    stride   = src_img.w,
+                    channels = 1,
+                    pixels   = local_gray[:gray_needed],
+                }
+                img_to_gray(&src_img, &local_gray_img)
+                img_resize_area(&local_gray_img, &scaled, dw, dh)
+                delete(local_gray)
+            }
+            img_free(&src_img)
+
+            atlas_insert(w.atlas, int(w.insts[idx].op_id), dw, dh, scaled.pixels, w.channels, scaled.stride)
+
+            tile_pixels = scaled.pixels
+            tile_stride = scaled.stride
+            need_free = true
+        }
+
+        // Blit to canvas
+        sy0 := int(w.insts[idx].y)
+        sx0 := int(w.insts[idx].x)
+        for yy in 0 ..< dh {
+            dst_y := sy0 + yy
+            if dst_y < 0 || dst_y >= w.height { continue }
+            copy_x := sx0
+            copy_src_x := 0
+            copy_w := dw
+            if copy_x < 0 { copy_src_x = -copy_x; copy_w += copy_x; copy_x = 0 }
+            if copy_x + copy_w > w.width { copy_w = w.width - copy_x }
+            if copy_w > 0 {
+                copy_bytes := copy_w * tile_channels
+                canvas_off := (dst_y * w.width + copy_x) * w.channels
+                tile_off := yy * tile_stride + copy_src_x * tile_channels
+                if canvas_off + copy_bytes <= len(w.canvas) && tile_off + copy_bytes <= len(tile_pixels) {
+                    if w.channels == 1 {
+                        simd_copy_buffer(w.canvas[canvas_off:canvas_off + copy_bytes], tile_pixels[tile_off:tile_off + copy_bytes])
+                    } else {
+                        copy(w.canvas[canvas_off:], tile_pixels[tile_off:])
+                    }
+                }
+            }
+        }
+
+        if need_free { delete(tile_pixels) }
+    }
+}
+
+blit_task_proc :: proc(task: thread.Task) {
+    w := (^Blit_Work)(task.data)
+    blit_do_work(w)
+}
+
 // ── Main render entry point ──
 render_main :: proc() {
     man_dir := cli_opt_str("manifests", "manifests_greedy")
@@ -525,6 +727,18 @@ render_main :: proc() {
     gray_scratch_img: Img
     defer delete(gray_scratch)
     
+    // Thread pool for blit workers — persistent across all frames to avoid
+    // per-frame thread create/join overhead.
+    num_workers := sys.num_threads
+    if num_workers < 1 { num_workers = 1 }
+    blit_pool: thread.Pool
+    thread.pool_init(&blit_pool, context.allocator, num_workers - 1)
+    thread.pool_start(&blit_pool)
+    defer {
+        thread.pool_join(&blit_pool)
+        thread.pool_destroy(&blit_pool)
+    }
+    
     // Process frames
     max_frames_actual := len(manifest_paths)
     if max_frames > 0 && max_frames < max_frames_actual { max_frames_actual = max_frames }
@@ -552,7 +766,11 @@ render_main :: proc() {
     start := time.tick_now()
     
     for fi in 0 ..< max_frames_actual {
-        mem.zero_slice(canvas)
+        if channels == 1 {
+            simd_zero_buffer(canvas)
+        } else {
+            mem.zero_slice(canvas)
+        }
         
         n := loaded_n[fi]
         insts := loaded_insts[fi]
@@ -606,113 +824,29 @@ render_main :: proc() {
         }
 
         if n > 0 && insts != nil {
-            for i in 0 ..< n {
-                if insts[i].op_id < 0 {
-                    // Solid fill
-                    val: u8 = 0
-                    if insts[i].op_id == -2 { val = 255 }
-                    sy0 := int(insts[i].y)
-                    sx0 := int(insts[i].x)
-                    for yy in 0 ..< int(insts[i].h) {
-                        dst_y := sy0 + yy
-                        if dst_y < 0 || dst_y >= height { continue }
-                        fill_x := sx0
-                        fill_w := int(insts[i].w)
-                        if fill_x < 0 { fill_w += fill_x; fill_x = 0 }
-                        if fill_x + fill_w > width { fill_w = width - fill_x }
-                        if fill_w > 0 {
-                            if channels == 3 {
-                                mem.set(raw_data(canvas[(dst_y * width + fill_x) * 3 : (dst_y * width + fill_x + fill_w) * 3]), val, fill_w * 3)
-                            } else {
-                                                            mem.set(raw_data(canvas[dst_y * width + fill_x : dst_y * width + fill_x + fill_w]), val, fill_w)
-                            }
-                        }
-                    }
-                    continue
-                }
-                
-                if int(insts[i].op_id) >= reg.n { continue }
-                
-                dw := int(insts[i].w)
-                dh := int(insts[i].h)
-                if dw <= 0 || dh <= 0 { continue }
-                
-                // Check atlas cache
-                cached := atlas_lookup(&atlas, int(insts[i].op_id), dw, dh)
-                
-                tile_pixels: []u8 = nil
-                tile_channels := channels
-                tile_stride := dw * channels
-                need_free := false
-                
-                if cached != nil {
-                    tile_pixels = cached.pixels
-                    tile_stride = cached.stride
-                } else {
-                    // Render source page (via pdf_render_page)
-                    pdf_path := reg.entries[int(insts[i].op_id)].pdf_path
-                    page_idx := int(reg.entries[int(insts[i].op_id)].page_idx)
-                    
-                    src_img: Img
-                    if pdf_render_page(pdf_path, page_idx, 1.0, &src_img) != 0 { continue }
-                    
-                    // Scale to tile size
-                    scaled: Img
-                    scaled.w = dw
-                    scaled.h = dh
-                    scaled.channels = channels
-                    scaled.stride = dw * channels
-                    scaled.pixels = make([]u8, dw * dh * channels)
-                    
-                    if channels == 3 && src_img.channels == 3 {
-                        img_resize_area(&src_img, &scaled, dw, dh)
-                    } else {
-                        gray_needed := src_img.w * src_img.h
-                        if gray_needed > gray_scratch_cap {
-                            delete(gray_scratch)
-                            gray_scratch = make([]u8, gray_needed)
-                            gray_scratch_cap = gray_needed
-                        }
-                        gray_scratch_img.w = src_img.w
-                        gray_scratch_img.h = src_img.h
-                        gray_scratch_img.stride = src_img.w
-                        gray_scratch_img.channels = 1
-                        gray_scratch_img.pixels = gray_scratch[:gray_needed]
-                        img_to_gray(&src_img, &gray_scratch_img)
-                        img_resize_area(&gray_scratch_img, &scaled, dw, dh)
-                    }
-                    img_free(&src_img)
-                    
-                    // Cache the tile
-                    atlas_insert(&atlas, int(insts[i].op_id), dw, dh, scaled.pixels, channels, scaled.stride)
-                    
-                    tile_pixels = scaled.pixels
-                    tile_stride = scaled.stride
-                    need_free = true
-                }
-                
-                // Blit to canvas
-                sy0 := int(insts[i].y)
-                sx0 := int(insts[i].x)
-                for yy in 0 ..< dh {
-                    dst_y := sy0 + yy
-                    if dst_y < 0 || dst_y >= height { continue }
-                    copy_x := sx0
-                    copy_src_x := 0
-                    copy_w := dw
-                    if copy_x < 0 { copy_src_x = -copy_x; copy_w += copy_x; copy_x = 0 }
-                    if copy_x + copy_w > width { copy_w = width - copy_x }
-                    if copy_w > 0 {
-                        copy_bytes := copy_w * tile_channels
-                        canvas_off := (dst_y * width + copy_x) * channels
-                        tile_off := yy * tile_stride + copy_src_x * tile_channels
-                        if canvas_off + copy_bytes <= len(canvas) && tile_off + copy_bytes <= len(tile_pixels) {
-                            copy(canvas[canvas_off:], tile_pixels[tile_off:])
-                        }
-                    }
-                }
-                
-                if need_free { delete(tile_pixels) }
+            work := Blit_Work{
+                canvas   = canvas,
+                width    = width,
+                height   = height,
+                channels = channels,
+                insts    = insts,
+                n        = n,
+                atlas    = &atlas,
+                reg      = &reg,
+                next_idx = 0,
+            }
+            
+            // Schedule workers via persistent thread pool (no per-frame create/join overhead)
+            for wi in 0 ..< num_workers - 1 {
+                thread.pool_add_task(&blit_pool, context.allocator, blit_task_proc, &work, wi)
+            }
+            
+            // Main thread works alongside pool
+            blit_do_work(&work)
+            
+            // Wait for pool workers to finish their tasks
+            for thread.pool_num_outstanding(&blit_pool) > 0 {
+                thread.yield()
             }
         }
         

@@ -125,7 +125,17 @@ arrange_cleanup :: proc(s: ^Arrange_State) {
 }
 
 // ── Shared coarse average (N×N grid) ──────────────────────────────
+// Hoist the `if channels == 3` branch out of the inner pixel loop into
+// two specializations — avoids branch mispredictions on every pixel.
 coarse_average :: proc(crop: []u8, sw, sh, N, channels, G, maxv: int, coarse_out: []u8) {
+	if channels == 3 {
+		coarse_average_bgr(crop, sw, sh, N, G, maxv, coarse_out)
+	} else {
+		coarse_average_gray(crop, sw, sh, N, G, maxv, coarse_out)
+	}
+}
+
+coarse_average_bgr :: proc(crop: []u8, sw, sh, N, G, maxv: int, coarse_out: []u8) {
 	for dy in 0 ..< N {
 		sy0 := dy * sh / N
 		sy1 := min((dy + 1) * sh / N, sh)
@@ -133,14 +143,32 @@ coarse_average :: proc(crop: []u8, sw, sh, N, channels, G, maxv: int, coarse_out
 			sx0 := dx * sw / N
 			sx1 := min((dx + 1) * sw / N, sw)
 			psum: u64 = 0
-			for sy in sy0 ..< sy1 {
+			#no_bounds_check for sy in sy0 ..< sy1 {
 				for sx in sx0 ..< sx1 {
-					if channels == 3 {
-						poff := sy * sw * 3 + sx * 3
-						psum += u64((29 * u32(crop[poff+0]) + 150 * u32(crop[poff+1]) + 77 * u32(crop[poff+2])) >> 8)
-					} else {
-						psum += u64(crop[sy * sw + sx])
-					}
+					poff := sy * sw * 3 + sx * 3
+					psum += u64((29 * u32(crop[poff+0]) + 150 * u32(crop[poff+1]) + 77 * u32(crop[poff+2])) >> 8)
+				}
+			}
+			area := (sy1 - sy0) * (sx1 - sx0)
+			v := int(psum / u64(area)) if area > 0 else 0
+			q := v if G >= 8 else (v * maxv + 127) / 255
+			if q > maxv { q = maxv }
+			coarse_out[dy * N + dx] = u8(q)
+		}
+	}
+}
+
+coarse_average_gray :: proc(crop: []u8, sw, sh, N, G, maxv: int, coarse_out: []u8) {
+	for dy in 0 ..< N {
+		sy0 := dy * sh / N
+		sy1 := min((dy + 1) * sh / N, sh)
+		for dx in 0 ..< N {
+			sx0 := dx * sw / N
+			sx1 := min((dx + 1) * sw / N, sw)
+			psum: u64 = 0
+			#no_bounds_check for sy in sy0 ..< sy1 {
+				for sx in sx0 ..< sx1 {
+					psum += u64(crop[sy * sw + sx])
 				}
 			}
 			area := (sy1 - sy0) * (sx1 - sx0)
@@ -359,6 +387,8 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 	CELL_SIZE :: 8
 
 	if s.cap_w < w || s.cap_h < h {
+		delete(s.sum)
+		delete(s.visited)
 		s.cap_w = w
 		s.cap_h = h
 		s.sum = make([]i64, (w + 1) * (h + 1))
@@ -366,7 +396,6 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 	}
 	sum_stride := w + 1
 
-	mem.zero_slice(s.sum)
 	for y in 0 ..< h {
 		row_sum: i64 = 0
 		for x in 0 ..< w {
@@ -378,7 +407,9 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 
 	gh := (h + CELL_SIZE - 1) / CELL_SIZE
 	gw := (w + CELL_SIZE - 1) / CELL_SIZE
-	mem.zero_slice(s.visited[:gh * gw])
+	if !(s.cap_w < w || s.cap_h < h) {
+		mem.zero_slice(s.visited[:gh * gw])
+	}
 
 	feat_len := db.feat_len
 	max_cells := max_block / CELL_SIZE
@@ -762,7 +793,9 @@ arrange_main :: proc() {
 	start := time.tick_now()
 
 	frame: Img
-	defer img_free(&frame)
+	// NOTE: frame.pixels is owned/managed by VideoDecoder for buffer reuse.
+	// img_free on exit would double-free the decoder's internal buffer.
+	// We nil it out before cleanup (see end of loop) — decoder frees it in close().
 	gray: Img
 	defer img_free(&gray)
 

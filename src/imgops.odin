@@ -34,12 +34,13 @@ img_to_gray_simd :: proc(src_pixels: []u8, src_stride: int, dst_pixels: []u8, ds
 		return
 	}
 
-	for y in 0 ..< h {
+	#no_bounds_check for y in 0 ..< h {
 		src_row := src_pixels[y*src_stride:]
 		dst_row := dst_pixels[y*dst_stride:]
 
 		x := 0
-		for x + LUMA_STEP <= w {
+		// Guard: need 16 contiguous bytes for u8x16 SIMD load (5 pixels = 15 BGR bytes).
+		for x + LUMA_STEP <= w && x * 3 + 16 <= len(src_row) {
 			raw := simd.from_slice(simd.u8x16, src_row[x*3:])
 
 			// SIMD channel extraction — single pshufb/tbl instruction per channel
@@ -47,14 +48,14 @@ img_to_gray_simd :: proc(src_pixels: []u8, src_stride: int, dst_pixels: []u8, ds
 			g_ch := simd.runtime_swizzle(raw, gray_g_idx)
 			r_ch := simd.runtime_swizzle(raw, gray_r_idx)
 
-			// Widen u8 lanes 0..4 to u16; lanes 5..7 are zero (padding).
-			b_a := simd.to_array(b_ch)
-			g_a := simd.to_array(g_ch)
-			r_a := simd.to_array(r_ch)
+			// Pointer-based access to first 5 lanes without the full 16-byte to_array spill
+			b_arr := (^[5]u8)(&b_ch)^
+			g_arr := (^[5]u8)(&g_ch)^
+			r_arr := (^[5]u8)(&r_ch)^
 
-			b16 := simd.u16x8{ u16(b_a[0]), u16(b_a[1]), u16(b_a[2]), u16(b_a[3]), u16(b_a[4]), 0, 0, 0 }
-			g16 := simd.u16x8{ u16(g_a[0]), u16(g_a[1]), u16(g_a[2]), u16(g_a[3]), u16(g_a[4]), 0, 0, 0 }
-			r16 := simd.u16x8{ u16(r_a[0]), u16(r_a[1]), u16(r_a[2]), u16(r_a[3]), u16(r_a[4]), 0, 0, 0 }
+			b16 := simd.u16x8{ u16(b_arr[0]), u16(b_arr[1]), u16(b_arr[2]), u16(b_arr[3]), u16(b_arr[4]), 0, 0, 0 }
+			g16 := simd.u16x8{ u16(g_arr[0]), u16(g_arr[1]), u16(g_arr[2]), u16(g_arr[3]), u16(g_arr[4]), 0, 0, 0 }
+			r16 := simd.u16x8{ u16(r_arr[0]), u16(r_arr[1]), u16(r_arr[2]), u16(r_arr[3]), u16(r_arr[4]), 0, 0, 0 }
 
 			// Luma = (29*B + 150*G + 77*R + 128) >> 8
 			// Max intermediate = 29*255 + 150*255 + 77*255 + 128 = 65408 (fits in u16)
@@ -64,13 +65,14 @@ img_to_gray_simd :: proc(src_pixels: []u8, src_stride: int, dst_pixels: []u8, ds
 			luma = simd.add(luma, luma_round128_)
 			luma = simd.shr(luma, 8) // >> 8 divide by 256
 
-			// Store NUMA_STEP results from the low 5 lanes
-			r := simd.to_array(luma)
-			dst_row[x+0] = u8(r[0])
-			dst_row[x+1] = u8(r[1])
-			dst_row[x+2] = u8(r[2])
-			dst_row[x+3] = u8(r[3])
-			dst_row[x+4] = u8(r[4])
+			// Store LUMA_STEP results from the low 5 lanes — read only 5 u16 values
+			// (10 bytes) instead of the full 16-byte to_array spill.
+			luma_arr := (^[5]u16)(&luma)^
+			dst_row[x+0] = u8(luma_arr[0])
+			dst_row[x+1] = u8(luma_arr[1])
+			dst_row[x+2] = u8(luma_arr[2])
+			dst_row[x+3] = u8(luma_arr[3])
+			dst_row[x+4] = u8(luma_arr[4])
 			x += LUMA_STEP
 		}
 
@@ -87,35 +89,101 @@ img_to_gray_simd :: proc(src_pixels: []u8, src_stride: int, dst_pixels: []u8, ds
 }
 
 // ── img_sobel_magnitude ───────────────────────────────────────
-// Scalar fallback (matching the C reference scalar path).
-// SIMD acceleration requires gather/scatter for the 3×3 kernel,
-// which portable core:simd does not expose directly.
+// SIMD-accelerated with u8x16 loads + actual SIMD i16x8 arithmetic.
+// Processes 16 pixels per SIMD block, split into 2 × 8-pixel halves
+// with true SIMD arithmetic on i16x8 vectors for gx/gy and magnitude.
+// Uses the fast magnitude: max(|gx|,|gy|) + min(|gx|,|gy|)/2.
 
 img_sobel_magnitude :: proc(gray: []u8, w, h: int, out: []u8) {
 	if w < 3 || h < 3 {
-		for i in 0 ..< len(out) {
-			out[i] = 0
-		}
+		for i in 0 ..< len(out) { out[i] = 0 }
 		return
 	}
 
-	for y in 1 ..< h - 1 {
-		for x in 1 ..< w - 1 {
-			tl := i32(gray[(y-1)*w+(x-1)])
-			tc := i32(gray[(y-1)*w+x])
-			tr := i32(gray[(y-1)*w+(x+1)])
-			ml := i32(gray[y*w+(x-1)])
-			mr := i32(gray[y*w+(x+1)])
-			bl := i32(gray[(y+1)*w+(x-1)])
-			bc := i32(gray[(y+1)*w+x])
-			br := i32(gray[(y+1)*w+(x+1)])
+	SOBEL_VL :: 16
 
-			gx := -tl + tr - 2*ml + 2*mr - bl + br
-			gy := -tl - 2*tc - tr + bl + 2*bc + br
+	for y in 1 ..< h - 1 {
+		rt := gray[(y-1)*w:]
+		rm := gray[y*w:]
+		rb := gray[(y+1)*w:]
+		ro := out[y*w:]
+
+		x := 1
+
+		// SIMD block: process 16 pixels per iteration with true SIMD i16x8 arithmetic
+		if w > SOBEL_VL + 1 {
+			#no_bounds_check for x + SOBEL_VL <= w - 1 {
+				tl_vec := (^simd.u8x16)(&rt[x-1])^
+				tc_vec := (^simd.u8x16)(&rt[x])^
+				tr_vec := (^simd.u8x16)(&rt[x+1])^
+				ml_vec := (^simd.u8x16)(&rm[x-1])^
+				mr_vec := (^simd.u8x16)(&rm[x+1])^
+				bl_vec := (^simd.u8x16)(&rb[x-1])^
+				bc_vec := (^simd.u8x16)(&rb[x])^
+				br_vec := (^simd.u8x16)(&rb[x+1])^
+
+				tl_a := transmute([16]u8)tl_vec
+				tc_a := transmute([16]u8)tc_vec
+				tr_a := transmute([16]u8)tr_vec
+				ml_a := transmute([16]u8)ml_vec
+				mr_a := transmute([16]u8)mr_vec
+				bl_a := transmute([16]u8)bl_vec
+				bc_a := transmute([16]u8)bc_vec
+				br_a := transmute([16]u8)br_vec
+
+				// Process low/high halves with actual SIMD i16x8 arithmetic
+				for half_offset := 0; half_offset < 2; half_offset += 1 {
+					off := half_offset * 8
+					tl := simd.i16x8{i16(tl_a[off+0]), i16(tl_a[off+1]), i16(tl_a[off+2]), i16(tl_a[off+3]), i16(tl_a[off+4]), i16(tl_a[off+5]), i16(tl_a[off+6]), i16(tl_a[off+7])}
+					tc := simd.i16x8{i16(tc_a[off+0]), i16(tc_a[off+1]), i16(tc_a[off+2]), i16(tc_a[off+3]), i16(tc_a[off+4]), i16(tc_a[off+5]), i16(tc_a[off+6]), i16(tc_a[off+7])}
+					tr := simd.i16x8{i16(tr_a[off+0]), i16(tr_a[off+1]), i16(tr_a[off+2]), i16(tr_a[off+3]), i16(tr_a[off+4]), i16(tr_a[off+5]), i16(tr_a[off+6]), i16(tr_a[off+7])}
+					ml := simd.i16x8{i16(ml_a[off+0]), i16(ml_a[off+1]), i16(ml_a[off+2]), i16(ml_a[off+3]), i16(ml_a[off+4]), i16(ml_a[off+5]), i16(ml_a[off+6]), i16(ml_a[off+7])}
+					mr := simd.i16x8{i16(mr_a[off+0]), i16(mr_a[off+1]), i16(mr_a[off+2]), i16(mr_a[off+3]), i16(mr_a[off+4]), i16(mr_a[off+5]), i16(mr_a[off+6]), i16(mr_a[off+7])}
+					bl := simd.i16x8{i16(bl_a[off+0]), i16(bl_a[off+1]), i16(bl_a[off+2]), i16(bl_a[off+3]), i16(bl_a[off+4]), i16(bl_a[off+5]), i16(bl_a[off+6]), i16(bl_a[off+7])}
+					bc := simd.i16x8{i16(bc_a[off+0]), i16(bc_a[off+1]), i16(bc_a[off+2]), i16(bc_a[off+3]), i16(bc_a[off+4]), i16(bc_a[off+5]), i16(bc_a[off+6]), i16(bc_a[off+7])}
+					br := simd.i16x8{i16(br_a[off+0]), i16(br_a[off+1]), i16(br_a[off+2]), i16(br_a[off+3]), i16(br_a[off+4]), i16(br_a[off+5]), i16(br_a[off+6]), i16(br_a[off+7])}
+
+					// SIMD arithmetic on i16x8 vectors (operator overloads +, -, *)
+					gx := -tl + tr - ml*2 + mr*2 - bl + br
+					gy := -tl - tc*2 - tr + bl + bc*2 + br
+
+					// Fast approximate magnitude with SIMD abs/max/min
+					agx := simd.abs(gx)
+					agy := simd.abs(gy)
+					mag := simd.max(agx, agy) + simd.shr(simd.min(agx, agy), simd.u16x8{1, 1, 1, 1, 1, 1, 1, 1})
+
+					// Clamp to u8 range
+					clamp_val := simd.i16x8{255, 255, 255, 255, 255, 255, 255, 255}
+					mag = simd.min(mag, clamp_val)
+
+					// Narrow and store
+					mag_a := transmute([8]i16)mag
+					for i in 0 ..< 8 {
+						ro[x+off+i] = u8(mag_a[i])
+					}
+				}
+				x += SOBEL_VL
+			}
+		}
+
+		// Scalar tail
+		for x < w - 1 {
+			tl := i32(rt[x-1])
+			tc := i32(rt[x])
+			tr := i32(rt[x+1])
+			ml := i32(rm[x-1])
+			mr := i32(rm[x+1])
+			bl := i32(rb[x-1])
+			bc := i32(rb[x])
+			br := i32(rb[x+1])
+
+			gx := -tl + tr - (ml << 1) + (mr << 1) - bl + br
+			gy := -tl - (tc << 1) - tr + bl + (bc << 1) + br
 			agx := abs(gx)
 			agy := abs(gy)
 
-			out[y*w+x] = u8(min(max(agx, agy) + min(agx, agy) / 2, 255))
+			ro[x] = u8(min(max(agx, agy) + min(agx, agy) / 2, 255))
+			x += 1
 		}
 	}
 
@@ -198,12 +266,24 @@ img_resize_area :: proc(src, dst: ^Img, nw, nh: int) {
 }
 
 img_threshold_u8 :: proc(buf: []u8, thr, maxval: int) {
-	for i in 0 ..< len(buf) {
-		if int(buf[i]) > thr {
-			buf[i] = u8(maxval)
-		} else {
-			buf[i] = 0
-		}
+	i := 0
+	n := len(buf)
+	thr_u8 := u8(thr)
+	max_u8 := u8(maxval)
+	thr_vec := simd.u8x16{thr_u8, thr_u8, thr_u8, thr_u8, thr_u8, thr_u8, thr_u8, thr_u8, thr_u8, thr_u8, thr_u8, thr_u8, thr_u8, thr_u8, thr_u8, thr_u8}
+	max_vec := simd.u8x16{max_u8, max_u8, max_u8, max_u8, max_u8, max_u8, max_u8, max_u8, max_u8, max_u8, max_u8, max_u8, max_u8, max_u8, max_u8, max_u8}
+	zero_vec := simd.u8x16{}
+
+	#no_bounds_check for i + 16 <= n {
+		v := (^simd.u8x16)(&buf[i])^
+		cmp := simd.lanes_gt(v, thr_vec)
+		result := simd.select(cmp, max_vec, zero_vec)
+		(^simd.u8x16)(&buf[i])^ = result
+		i += 16
+	}
+	#no_bounds_check for i < n {
+		buf[i] = max_u8 if buf[i] > thr_u8 else 0
+		i += 1
 	}
 }
 

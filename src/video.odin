@@ -2,6 +2,7 @@ package main
 
 import "core:c"
 import "core:fmt"
+import "core:mem"
 import "core:os"
 import "core:strings"
 
@@ -218,7 +219,7 @@ codecctx_width :: proc(ctx: rawptr) -> c.int {
 codecctx_height :: proc(ctx: rawptr) -> c.int {
     return (^c.int)(uintptr(ctx) + AV_CODECCTX_HEIGHT)^
 }
-codecctx_pix_fmt :: proc(ctx: rawptr) -> c.int {
+	codecctx_pix_fmt :: proc(ctx: rawptr) -> c.int {
     return (^c.int)(uintptr(ctx) + AV_CODECCTX_PIX_FMT)^
 }
 codecctx_time_base_num :: proc(ctx: rawptr) -> c.int {
@@ -463,7 +464,9 @@ VideoDecoder :: struct {
 	width:          int,
 	height:         int,
 	fps:            f64,
-	eof: bool,
+	eof:            bool,
+	frame_buf:      []u8,
+	frame_buf_cap:  int,
 }
 
 video_decoder_open :: proc(path: string) -> ^VideoDecoder {
@@ -596,15 +599,24 @@ video_decoder_read_frame :: proc(dec: ^VideoDecoder, out: ^Img) -> bool {
 
 			w, h := dec.width, dec.height
 			frame_bytes := w * h * 3
-			pixels := make([]u8, frame_bytes)
+			if frame_bytes > dec.frame_buf_cap {
+				delete(dec.frame_buf)
+				dec.frame_buf = make([]u8, frame_bytes)
+				dec.frame_buf_cap = frame_bytes
+			}
+			mem.zero_slice(dec.frame_buf[:frame_bytes])
+			pixels := dec.frame_buf[:frame_bytes]
 			dst_slices: [1]rawptr
 			dst_slices[0] = raw_data(pixels)
 			dst_stride := c.int(w * 3)
 
 			src_data: [MAX_VIDEO_PLANES]rawptr
 			src_linesize: [MAX_VIDEO_PLANES]c.int
-			src_data[0] = frame_data(dec.frame, 0)
-			src_linesize[0] = frame_linesize(dec.frame, 0)
+			for i in 0 ..< MAX_VIDEO_PLANES {
+				src_data[i] = frame_data(dec.frame, c.int(i))
+				src_linesize[i] = frame_linesize(dec.frame, c.int(i))
+			}
+
 
 			scale_ret := sws_scale(
 				dec.sws,
@@ -635,6 +647,7 @@ video_decoder_close :: proc(dec: ^VideoDecoder) {
 	av_packet_free(&dec.pkt)
 	avcodec_free_context(&dec.codec_ctx)
 	avformat_close_input(&dec.fmt_ctx)
+	delete(dec.frame_buf)
 	free(dec)
 }
 
@@ -738,8 +751,10 @@ video_image_load :: proc(path: string, out: ^Img) -> int {
 
 		src_data: [MAX_VIDEO_PLANES]rawptr
 		src_linesize: [MAX_VIDEO_PLANES]c.int
-		src_data[0] = frame_data(frame, 0)
-		src_linesize[0] = frame_linesize(frame, 0)
+		for i in 0 ..< MAX_VIDEO_PLANES {
+			src_data[i] = frame_data(frame, c.int(i))
+			src_linesize[i] = frame_linesize(frame, c.int(i))
+		}
 
 		scale_ret := sws_scale(sws, &src_data, &src_linesize,
 			0, frame_height(frame), &dst_slices, &dst_stride)
@@ -980,8 +995,10 @@ video_encoder_write_frame :: proc(enc: ^VideoEncoder, img: ^Img) {
 		src_stride = c.int(img.stride)
 		dst_data: [MAX_VIDEO_PLANES]rawptr
 		dst_linesize: [MAX_VIDEO_PLANES]c.int
-		dst_data[0] = frame_data(enc.frame, 0)
-		dst_linesize[0] = frame_linesize(enc.frame, 0)
+		for i in 0 ..< MAX_VIDEO_PLANES {
+			dst_data[i] = frame_data(enc.frame, c.int(i))
+			dst_linesize[i] = frame_linesize(enc.frame, c.int(i))
+		}
 		if sws_scale(
 			enc.sws_gray8,
 			&src_slices, &src_stride,
@@ -995,8 +1012,10 @@ video_encoder_write_frame :: proc(enc: ^VideoEncoder, img: ^Img) {
 		src_stride = c.int(img.stride)
 		dst_data: [MAX_VIDEO_PLANES]rawptr
 		dst_linesize: [MAX_VIDEO_PLANES]c.int
-		dst_data[0] = frame_data(enc.frame, 0)
-		dst_linesize[0] = frame_linesize(enc.frame, 0)
+		for i in 0 ..< MAX_VIDEO_PLANES {
+			dst_data[i] = frame_data(enc.frame, c.int(i))
+			dst_linesize[i] = frame_linesize(enc.frame, c.int(i))
+		}
 		if sws_scale(
 			enc.sws,
 			&src_slices, &src_stride,

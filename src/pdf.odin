@@ -40,7 +40,7 @@ has_pdf_ext :: proc(path: string) -> bool {
     if len(path) < 4 { return false }
     // Case-insensitive .pdf check
     end := path[len(path)-4:]
-    return (end[0] == '.' || end[0] == '.') &&
+    return (end[0] == '.') &&
            (end[1] == 'p' || end[1] == 'P') &&
            (end[2] == 'd' || end[2] == 'D') &&
            (end[3] == 'f' || end[3] == 'F')
