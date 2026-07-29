@@ -6,6 +6,40 @@ import "core:strings"
 
 VERSION :: "1.0.0"
 
+file_exists :: proc(path: string) -> bool {
+    f, _ := os.open(path)
+    if f != nil {
+        os.close(f)
+        return true
+    }
+    return false
+}
+
+// Resolve library path following the C reference pattern:
+// 1. Explicit --library flag
+// 2. Current directory if features.bin + registry.bin exist there
+// 3. ~/.badapplestein/library/ if features.bin + registry.bin exist there
+// 4. Fallback to current directory
+resolveLibraryPath :: proc(explicit: string) -> string {
+    if len(explicit) > 0 do return explicit
+
+    if file_exists("features.bin") && file_exists("registry.bin") {
+        return "."
+    }
+
+    home_buf: [4096]u8
+    home := os.get_env_buf(home_buf[:], "HOME")
+    if len(home) > 0 {
+        lib_path := fmt.tprintf("%s/.badapplestein/library", home)
+        if file_exists(fmt.tprintf("%s/features.bin", lib_path)) &&
+           file_exists(fmt.tprintf("%s/registry.bin", lib_path)) {
+            return lib_path
+        }
+    }
+
+    return "."
+}
+
 print_help :: proc() {
     fmt.eprintfln(
         "BadOdinStein v%s — tiled video encoder using PDF/image library matching\n" +
@@ -33,6 +67,7 @@ print_arrange_help :: proc() {
         "  --video <file>         Input video file (required)\n" +
         "  --features <file>      Feature database (default: features.bin)\n" +
         "  --registry <file>      Registry (default: registry.bin)\n" +
+        "  --library <dir>        Library directory (searched: ., ~/.badapplestein/library/)\n" +
         "  --manifests <dir>      Manifest output directory (default: manifests_greedy)\n" +
         "  --max-block-pct <N>   Maximum block size as percentage of frame (default: auto)\n" +
         "  --hero-min-pct <N>    Minimum hero block size as percentage of frame (default: 192)\n" +
@@ -53,6 +88,7 @@ print_render_help :: proc() {
         "Options:\n" +
         "  --manifests <dir>      Manifest directory (default: manifests_greedy)\n" +
         "  --registry <file>      Registry (default: registry.bin)\n" +
+        "  --library <dir>        Library directory (searched: ., ~/.badapplestein/library/)\n" +
         "  --output <file>        Output video (default: output.mov)\n" +
         "  --width <N>            Output width (overrides preset)\n" +
         "  --height <N>           Output height (overrides preset)\n" +

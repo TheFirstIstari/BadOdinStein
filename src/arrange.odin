@@ -99,6 +99,13 @@ Arrange_State :: struct {
 	cap_w, cap_h: int,
 	spec_cap, coarse_cap, miss_cap, result_cap: int,
 	crop_cap: int,
+
+	// Persistent thread pool + per-worker buffers for parallel feature extraction
+	feat_pool:         thread.Pool,
+	feat_pool_workers: int,
+	worker_crop_bufs:  [][]u8,
+	worker_coarse_feats: [][]u8,
+	worker_feat_bufs:  []Feature_Buffers,
 }
 
 arrange_init :: proc(s: ^Arrange_State) {
@@ -122,6 +129,18 @@ arrange_cleanup :: proc(s: ^Arrange_State) {
 	delete(s.crop_bufs)
 	delete(s.miss_idx)
 	delete(s.results)
+
+	// Destroy persistent thread pool and free per-worker buffers
+	thread.pool_join(&s.feat_pool)
+	thread.pool_destroy(&s.feat_pool)
+	for i in 0 ..< s.feat_pool_workers {
+		delete(s.worker_crop_bufs[i])
+		delete(s.worker_coarse_feats[i])
+		feature_bufs_cleanup(&s.worker_feat_bufs[i])
+	}
+	delete(s.worker_crop_bufs)
+	delete(s.worker_coarse_feats)
+	delete(s.worker_feat_bufs)
 }
 
 // ── Shared coarse average (N×N grid) ──────────────────────────────
@@ -349,8 +368,8 @@ Feat_Work :: struct {
 	ccache_cap:   int,
 }
 
-feat_thread_proc :: proc(t: ^thread.Thread) {
-	w := cast(^Feat_Work)t.data
+feat_task_proc :: proc(task: thread.Task) {
+	w := cast(^Feat_Work)task.data
 
 	for i in w.spec_start ..< w.spec_end {
 		sp := w.specs[i]
@@ -534,15 +553,12 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 			N := s.g_scales[0]
 			maxv := (1 << u32(db.G)) - 1
 
-			// Parallel feature extraction using threads
-			num_cores := os.get_processor_core_count()
-			if num_cores <= 0 { num_cores = 1 }
-			num_feat_threads := min(num_cores, n_specs / 32)
+			// Parallel feature extraction using persistent thread pool
+			num_feat_threads := min(s.feat_pool_workers, n_specs / 32)
 
 			if num_feat_threads > 1 {
 				specs_per_thread := n_specs / num_feat_threads
 				feat_work := make([]Feat_Work, num_feat_threads)
-				feat_threads := make([]^thread.Thread, num_feat_threads)
 
 				for ti in 0 ..< num_feat_threads {
 					start := ti * specs_per_thread
@@ -551,11 +567,7 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 						end = n_specs
 					}
 
-					// Each thread gets its own crop buffer, coarse_feat buffer, and feature buffers
-					thread_crop := make([]u8, crop_sz)
-					thread_coarse := make([]u8, N * N)
-					thread_feat_bufs := feature_bufs_init(max_block, crop_sz)
-
+					// Each worker gets its own pre-allocated crop buffer, coarse_feat buffer, and feature buffers
 					feat_work[ti] = Feat_Work {
 						specs = s.specs[:n_specs],
 						gray = gray,
@@ -576,31 +588,24 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 						coarse_len = coarse_len,
 						scales = s.g_scales[:s.g_n_scales],
 						n_scales = s.g_n_scales,
-						crop_buf = thread_crop,
-						coarse_feat = thread_coarse,
-						feat_bufs = thread_feat_bufs,
+						crop_buf = s.worker_crop_bufs[ti],
+						coarse_feat = s.worker_coarse_feats[ti],
+						feat_bufs = s.worker_feat_bufs[ti],
 						coarse_hit = s.coarse_hit,
 						out_feat_bufs = feat_bufs,
 						ccache = s.ccache,
 						ccache_cap = s.ccache_cap,
 					}
 
-					th := thread.create(feat_thread_proc)
-					th.data = &feat_work[ti]
-					thread.start(th)
-					feat_threads[ti] = th
+					thread.pool_add_task(&s.feat_pool, context.allocator, feat_task_proc, &feat_work[ti], ti)
 				}
 
-				// Wait for all threads
-				for ti in 0 ..< num_feat_threads {
-					thread.join(feat_threads[ti])
-					delete(feat_work[ti].crop_buf)
-					delete(feat_work[ti].coarse_feat)
-					feature_bufs_cleanup(&feat_work[ti].feat_bufs)
+				// Wait for all dispatched tasks to complete
+				for thread.pool_num_outstanding(&s.feat_pool) > 0 {
+					thread.yield()
 				}
 
 				delete(feat_work)
-				delete(feat_threads)
 			} else {
 				// Single-threaded fallback
 				coarse_feat := make([]u8, N * N)
@@ -727,8 +732,9 @@ arrange_main :: proc() {
 	defer arrange_cleanup(&state)
 
 	video_path := cli_opt_str("video", "")
-	feat_path := cli_opt_str("features", "features.bin")
-	reg_path := cli_opt_str("registry", "registry.bin")
+	lib_dir := resolveLibraryPath(cli_opt_str("library", ""))
+	feat_path := cli_opt_str("features", fmt.tprintf("%s/features.bin", lib_dir))
+	reg_path := cli_opt_str("registry", fmt.tprintf("%s/registry.bin", lib_dir))
 	man_dir := cli_opt_str("manifests", "manifests_greedy")
 	max_frames := cli_opt_int("max-frames", 0)
 	if cli_has("max-block-pct") { state.g_max_block_pct = cli_opt_f64("max-block-pct", 0.5) }
@@ -779,6 +785,27 @@ arrange_main :: proc() {
 	max_block = (max_block / 8) * 8
 	if max_block < 8 { max_block = 8 }
 	hero_min := int(f64(fh) * state.g_hero_min_pct)
+
+	// Initialize persistent thread pool for parallel feature extraction
+	num_cores := os.get_processor_core_count()
+	if num_cores <= 0 { num_cores = 1 }
+	state.feat_pool_workers = num_cores
+	thread.pool_init(&state.feat_pool, context.allocator, num_cores)
+	thread.pool_start(&state.feat_pool)
+
+	// Pre-allocate per-worker buffers for feature extraction (reused across all frames)
+	ch_mult: int = 3 if db.channels == 3 else 1
+	crop_sz := max_block * max_block * ch_mult
+	N := state.g_scales[0]
+	coarse_len := N * N
+	state.worker_crop_bufs = make([][]u8, num_cores)
+	state.worker_coarse_feats = make([][]u8, num_cores)
+	state.worker_feat_bufs = make([]Feature_Buffers, num_cores)
+	for i in 0 ..< num_cores {
+		state.worker_crop_bufs[i] = make([]u8, crop_sz)
+		state.worker_coarse_feats[i] = make([]u8, coarse_len)
+		state.worker_feat_bufs[i] = feature_bufs_init(max_block, crop_sz)
+	}
 
 	os.make_directory(man_dir)
 

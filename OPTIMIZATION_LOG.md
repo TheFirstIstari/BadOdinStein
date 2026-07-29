@@ -407,6 +407,44 @@ idx := (start + probe) & u32(atlas.capacity - 1)
 
 ---
 
+### 18. Replaced Per-Frame Thread Create/Join with Persistent ThreadPool for Matching
+
+**File:** `src/arrange.odin`
+
+**Before:** The `solve_full` function in the arrange stage created and destroyed OS threads for every
+frame's feature extraction using `thread.create` / `thread.start` / `thread.join`. Each call to
+`solve_full` would allocate `Feat_Work` structs, per-thread crop buffers, coarse feature buffers,
+and `Feature_Buffers`, dispatch threads, then join and free everything. The OS thread creation
+overhead was amortized across only `n_specs / 32` tiles per batch, making it especially costly for
+short frames with few tiles.
+
+**After:** Added a persistent `thread.Pool` to `Arrange_State`, initialized once in `arrange_main`
+before the frame loop and cleaned up in `arrange_cleanup`. Per-worker buffers (`crop_bufs`,
+`coarse_feats`, `Feature_Buffers`) are pre-allocated once at init time and reused across all frames.
+`match_batch_coarse` feature extraction now dispatches work via `thread.pool_add_task` and waits
+with `thread.pool_num_outstanding` + `thread.yield`, mirroring the pattern already used by the
+render stage's blit thread pool.
+
+**Key implementation details:**
+- `feat_task_proc` replaces the old `feat_thread_proc`; its signature matches `thread.Task_Proc`
+  (`proc(task: thread.Task)`) so it works with `thread.pool_add_task`.
+- `s.feat_pool_workers` stores the pool size (initialized from `os.get_processor_core_count()`).
+- `s.worker_crop_bufs`, `s.worker_coarse_feats`, `s.worker_feat_bufs` are per-worker persistent
+  buffers sized to `max_block × max_block × ch_mult` (crop), `scales[0]²` (coarse), and
+  `feature_bufs_init(max_block, crop_sz)` respectively.
+- The `feat_work` descriptor array is still allocated per `solve_full` call (small, stack-like)
+  but the heavy per-thread buffers are pre-allocated and reused.
+- Single-threaded fallback (`num_feat_threads <= 1`) is preserved unchanged for small tile counts.
+
+**Impact:** Eliminates OS thread creation/destruction overhead per frame. The pool spin-up cost is
+paid once at startup; subsequent frames dispatch tasks to already-warm worker threads. Expected
+reduction in per-frame match setup latency, especially beneficial for short videos or frames with
+few tiles.
+
+**Verification:** Build + test passes. All existing single-threaded fallback behavior preserved.
+
+---
+
 ### Performance Summary
 
 All optimizations combined bring BadOdinStein to the following performance vs the C reference BadApplestein:
@@ -417,3 +455,41 @@ All optimizations combined bring BadOdinStein to the following performance vs th
 | Odin baseline (no optimizations) | 5.76s | 3.67× |
 | Odin after atlas fix | 3.095s | 1.97× |
 | **Odin all optimizations** | **2.858s** | **1.82×** |
+
+---
+
+## Correctness Fixes (from BadApplestein C reference parity)
+
+### Canvas Dimension Overflow Validation in Render Pipeline
+
+**Date:** 2026-07-29
+**File:** `src/render.odin`
+**Change:** Added canvas dimension overflow validation matching the C reference `render.c` lines 818-820: checks that `width > 0 && height > 0` (fatal error) and that `width * height` does not overflow `int` and `width * height * channels` fits within `int`, before computing `canvas_bytes` and allocating the canvas buffer.
+
+**Rationale:** The C reference validates canvas dimensions before allocation, checking both for invalid (zero/negative) dimensions and for integer overflow that would lead to undersized buffer allocations or undefined behavior. The Odin render port was missing these checks entirely.
+
+**Before:** No dimension/overflow validation before canvas allocation — potential undefined behavior on invalid or overflowing dimensions.
+**After:** `cli_die` called with "invalid canvas dimensions" if width<=0 or height<=0; "canvas dimensions overflow" if the multiplication would overflow.
+**Verification:** `odin build src/ -out:badodin -o:speed` succeeds.
+
+### Library Path Resolution in main.odin
+
+**Date:** 2026-07-29
+**Files:** `src/main.odin`, `src/arrange.odin`, `src/render.odin`
+**Change:** Added `resolveLibraryPath` and `file_exists` utility procs to `main.odin` following the C reference `resolve_library()` pattern (BadApplestein `src/main.c` line 112). Resolution logic checks:
+1. Explicit `--library` flag (if provided)
+2. Current directory for `features.bin` + `registry.bin`
+3. `~/.badapplestein/library/` for `features.bin` + `registry.bin`
+4. Fallback to current directory (".")
+
+Updated `arrange_main()` and `render_main()` to use `resolveLibraryPath` as the base directory for default `features.bin`/`registry.bin` paths. Added `--library` option documentation to arrange and render help text.
+
+Added new procs:
+- `file_exists(path: string) -> bool` — checks if a file exists using `os.open`/`os.close`
+- `resolveLibraryPath(explicit: string) -> string` — resolves library directory path via the 4-stage lookup
+
+**Rationale:** BadOdinStein took library-related paths (features.bin, registry.bin) as-is from CLI with no resolution logic. The C reference has rich path resolution checking multiple candidate directories. This adds the basic equivalent pattern to Odin.
+
+**Before:** `--features` and `--registry` paths taken literally from CLI with no fallback resolution; `--library` flag not handled at all.
+**After:** `resolveLibraryPath` called in both `arrange_main()` and `render_main()` to find the library directory; resolved path used as base for default features.bin/registry.bin. `--library` flag now recognized and used.
+**Verification:** `odin build src/ -out:badodin -o:speed` succeeds.

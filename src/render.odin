@@ -4,7 +4,6 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 import "core:mem"
-import "core:math"
 import "core:time"
 import "core:thread"
 import "core:sync"
@@ -594,7 +593,8 @@ blit_task_proc :: proc(task: thread.Task) {
 // ── Main render entry point ──
 render_main :: proc() {
     man_dir := cli_opt_str("manifests", "manifests_greedy")
-    reg_path := cli_opt_str("registry", "registry.bin")
+    lib_dir := resolveLibraryPath(cli_opt_str("library", ""))
+    reg_path := cli_opt_str("registry", fmt.tprintf("%s/registry.bin", lib_dir))
     output := cli_opt_str("output", "output.mov")
     width := cli_opt_int("width", 0)
     height := cli_opt_int("height", 0)
@@ -715,7 +715,16 @@ render_main :: proc() {
     atlas_init(&atlas, sys.cache_budget_bytes)
     defer atlas_free(&atlas)
     
-    // Canvas
+    // Canvas — dimension and overflow validation, matching C reference render.c.
+    if width <= 0 || height <= 0 {
+        cli_die("invalid canvas dimensions: %dx%d", width, height)
+    }
+    w64 := cast(u64)width
+    h64 := cast(u64)height
+    c64 := cast(u64)channels
+    if w64 > 0xFFFFFFFFFFFFFFFF / h64 || w64 * h64 > 0xFFFFFFFFFFFFFFFF / c64 {
+        cli_die("canvas dimensions overflow")
+    }
     canvas_bytes := width * height * channels
     canvas := make([]u8, canvas_bytes)
     defer delete(canvas)
