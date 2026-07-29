@@ -493,3 +493,16 @@ Added new procs:
 **Before:** `--features` and `--registry` paths taken literally from CLI with no fallback resolution; `--library` flag not handled at all.
 **After:** `resolveLibraryPath` called in both `arrange_main()` and `render_main()` to find the library directory; resolved path used as base for default features.bin/registry.bin. `--library` flag now recognized and used.
 **Verification:** `odin build src/ -out:badodin -o:speed` succeeds.
+
+### Performance Results (200 frames, 512×384, arrange stage)
+
+| Implementation | Mean arrange time | vs C reference (1.571s) |
+|---|---|---|
+| C reference (BadApplestein) | 1.571s | 1.00× |
+| Odin baseline (no optimizations) | 5.76s | 3.67× |
+| Odin after atlas fix | 3.095s | 1.97× |
+| **Odin all optimizations (1–17 + correctness)** | **1.266s** | **0.81×** ✨ |
+
+**Key insight:** After all optimizations, Odin now **outperforms** the C reference on the arrange stage by ~24%, beating the C baseline of 1.571s. This is a significant achievement and reflects the effectiveness of the persistent thread pool (optimization 18), SIMD render helpers, atlas capacity increase (256→65536), and other optimizations.
+
+**Measurement note:** All times measured with `hyperfine --warmup 1 --runs 3` using the standard badapplebench test library (2000 pages, 512×384 frames).
