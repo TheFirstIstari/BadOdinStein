@@ -802,11 +802,40 @@ VideoEncoder :: struct {
 	no_file:        bool,
 }
 
+// probe_hw_encoder — find the best available hardware encoder.
+// Mirrors the C reference's video_probe_hw_encoder() in src/video.c
+// Searches for VAAPI (Linux) and VideoToolbox (macOS) encoders.
+probe_hw_encoder :: proc() -> string {
+	when ODIN_OS == .Darwin {
+		hw_candidates := []string{"hevc_videotoolbox", "h264_videotoolbox"}
+		for candidate in hw_candidates {
+			cand_c, buf := clone_to_cstr(candidate)
+			codec := avcodec_find_encoder_by_name(cand_c)
+			delete(buf)
+			if codec != nil {
+				return candidate
+			}
+		}
+	} else when ODIN_OS == .Linux {
+		hw_candidates := []string{"hevc_vaapi", "h264_vaapi", "hevc_nvenc", "h264_nvenc"}
+		for candidate in hw_candidates {
+			cand_c, buf := clone_to_cstr(candidate)
+			codec := avcodec_find_encoder_by_name(cand_c)
+			delete(buf)
+			if codec != nil {
+				return candidate
+			}
+		}
+	}
+	return ""
+}
+
 video_encoder_open :: proc(
 	path: string,
 	width, height, fps: int,
 	codec_name: string,
 	bitrate: int,
+	pix_fmt_name: string, // optional: override pixel format; empty string derives from codec_name
 ) -> ^VideoEncoder {
 	enc := new(VideoEncoder)
 	enc.width = width
@@ -862,14 +891,20 @@ video_encoder_open :: proc(
 		return nil
 	}
 
-	// Determine destination pixel format from codec name
-	switch {
-	case len(codec_name) > 0 && strings.contains(codec_name, "prores"):
-		enc.dst_pix_fmt = av_get_pix_fmt(cstring("yuv422p10le"))
-	case len(codec_name) > 0 && (strings.contains(codec_name, "h264") || strings.contains(codec_name, "libx264")):
-		enc.dst_pix_fmt = av_get_pix_fmt(cstring("yuv420p"))
-	case:
-		enc.dst_pix_fmt = av_get_pix_fmt(cstring("yuv422p10le"))
+	// Determine destination pixel format from codec name or explicit override.
+	if len(pix_fmt_name) > 0 {
+		pix_fmt_c, pix_fmt_buf := clone_to_cstr(pix_fmt_name)
+		enc.dst_pix_fmt = av_get_pix_fmt(pix_fmt_c)
+		delete(pix_fmt_buf)
+	} else {
+		switch {
+		case len(codec_name) > 0 && strings.contains(codec_name, "prores"):
+			enc.dst_pix_fmt = av_get_pix_fmt(cstring("yuv422p10le"))
+		case len(codec_name) > 0 && (strings.contains(codec_name, "h264") || strings.contains(codec_name, "libx264")):
+			enc.dst_pix_fmt = av_get_pix_fmt(cstring("yuv420p"))
+		case:
+			enc.dst_pix_fmt = av_get_pix_fmt(cstring("yuv422p10le"))
+		}
 	}
 
 	codecctx_set_width(enc.codec_ctx, c.int(width))

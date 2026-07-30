@@ -234,9 +234,13 @@ img_resize_area :: proc(src, dst: ^Img, nw, nh: int) {
 	for dy in 0 ..< nh {
 		sy0 := dy * sh / nh
 		sy1 := (dy + 1) * sh / nh
+		if sy1 > sh { sy1 = sh }
+		if sy0 >= sy1 { sy1 = sy0 + 1 }
 		for dx in 0 ..< nw {
 			sx0 := dx * sw / nw
 			sx1 := (dx + 1) * sw / nw
+			if sx1 > sw { sx1 = sw }
+			if sx0 >= sx1 { sx1 = sx0 + 1 }
 			area := (sx1 - sx0) * (sy1 - sy0)
 			if area == 0 {
 				area = 1
@@ -305,6 +309,9 @@ img_compute_feature :: proc(crop: ^Img, N, G, color: int, out: []u8) {
 	if channels == 3 && color == 0 {
 		channels = 1
 	}
+	if color == 1 && channels == 1 {
+		channels = 3
+	}
 
 	stride := N * channels
 	tmp_buf := make([]u8, stride*N, context.allocator)
@@ -317,6 +324,16 @@ img_compute_feature :: proc(crop: ^Img, N, G, color: int, out: []u8) {
 		gray := Img{w = crop.w, h = crop.h, stride = crop.w, pixels = gray_buf, channels = 1}
 		img_to_gray(crop, &gray)
 		img_resize_area(&gray, &tmp, N, N)
+	} else if color == 1 && crop.channels == 1 {
+		color_buf := make([]u8, crop.w*crop.h*3, context.allocator)
+		defer delete(color_buf)
+		color_src := Img{w = crop.w, h = crop.h, stride = crop.w*3, pixels = color_buf, channels = 3}
+		for i in 0 ..< crop.w * crop.h {
+			color_buf[i*3+0] = crop.pixels[i]
+			color_buf[i*3+1] = crop.pixels[i]
+			color_buf[i*3+2] = crop.pixels[i]
+		}
+		img_resize_area(&color_src, &tmp, N, N)
 	} else {
 		img_resize_area(crop, &tmp, N, N)
 	}

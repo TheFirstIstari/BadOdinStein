@@ -4,7 +4,7 @@ import "core:fmt"
 import "core:os"
 import "core:strings"
 
-VERSION :: "1.0.0"
+VERSION :: "1.1.0"
 
 file_exists :: proc(path: string) -> bool {
     f, _ := os.open(path)
@@ -95,8 +95,12 @@ print_render_help :: proc() {
         "  --fps <N>              Output FPS (overrides preset)\n" +
         "  --preset <name>        Resolution preset: 8k, 4k, 1080p, 720p\n" +
         "  --channels <N>         1=grayscale, 3=color (default: 1)\n" +
+        "  --codec <name>         FFmpeg encoder (default: auto-detect best available)\n" +
+        "  --pix-fmt <name>       Pixel format (default: auto from codec)\n" +
+        "  --no-hw                 Disable hardware encoder, force software (ProRes)\n" +
         "  --max-frames <N>       Maximum frames to render (0 = all)\n" +
         "  --threads <N>          Thread count (0 = auto)\n" +
+        "  --keep-manifests       Keep manifest files after encoding\n" +
         "  --verbose, -v          Verbose output\n" +
         "  --quiet, -q            Suppress non-error output\n" +
         "  --json                 Machine-readable JSON output\n")
@@ -114,6 +118,7 @@ print_build_help :: proc() {
         "  --no-edges             Disable edge detection features\n" +
         "  --color                Include BGR color features\n" +
         "  --scales <list>        Comma-separated scale levels (default: 32,64,128)\n" +
+        "  --multi-scale          Emit 0.5x, 1.0x, 1.5x, 2.0x render variants per source\n" +
         "  --out <file>           Output features file (default: features.bin)\n" +
         "  --threads <N>          Thread count (0 = auto)\n" +
         "  --verbose, -v          Verbose output\n" +

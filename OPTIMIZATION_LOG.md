@@ -445,6 +445,70 @@ few tiles.
 
 ---
 
+### 19. Auto-Detect Output Dimensions from Source Video (Feature Parity)
+
+**Date:** 2026-07-29
+**File:** `src/render.odin`
+
+**Before:** `render_main()` only auto-detected output dimensions when **both** `width` and `height` were <= 0. In that case it read `src_w`/`src_h` from the first manifest's header and used them directly. When **only one** dimension was specified, or when **neither** was specified but the source had a different aspect ratio from the default 7680×4320, the output would be incorrect — the missing dimension would fall through to the 7680/4320 defaults instead of being computed from the source aspect ratio.
+
+**After:** Expanded the auto-detection block to handle all three cases from the C reference `render.c` (lines 685-724):
+1. **Neither specified** (`width <= 0 && height <= 0`): use source dimensions directly from the manifest header (`src_w`, `src_h`)
+2. **Width only** (`width > 0 && height <= 0`): compute `height = width / src_aspect`, rounded to even
+3. **Height only** (`height > 0 && width <= 0`): compute `width = height * src_aspect`, rounded to even
+
+The manifest header is read from the first 8 bytes (src_w as u32 LE at offset 0, src_h as u32 LE at offset 4), matching the C reference's `fread(&msw, 4, 1, pf)` + `fread(&msh, 4, 1, pf)` pattern. The aspect ratio computation and even-rounding (`(dim / 2) * 2`) match the C reference exactly.
+
+**Impact:** Full feature parity with the C reference for output dimension auto-detection. Previously, passing `--width 1920` without `--height` would produce a 1920×4320 frame instead of the correct height computed from the source aspect ratio.
+
+**Verification:** `odin build src/ -out:badodin -o:speed -disable-assert` passes.
+
+---
+
+### 20. Edge-Case Clamping Guards in img_resize_area (imgops.odin)
+
+Date: 2026-07-29
+File: src/imgops.odin
+
+Before: The `img_resize_area` proc's inner loop computed source coordinate bounds `sy1` and `sx1` via integer division without clamping to the source dimensions, and had no guard against zero-width source regions. The C reference (BadApplestein `src/imgops.c` lines 126-132) applies four bounds checks:
+
+```c
+if (sy1 > sh) sy1 = sh;
+if (sy0 >= sy1) sy1 = sy0 + 1;
+if (sx1 > sw) sx1 = sw;
+if (sx0 >= sx1) sx1 = sx0 + 1;
+```
+
+After: Added all four clamping guards to the Odin `img_resize_area` inner loop, matching the C reference exactly:
+
+```odin
+if sy1 > sh { sy1 = sh }
+if sy0 >= sy1 { sy1 = sy0 + 1 }
+if sx1 > sw { sx1 = sw }
+if sx0 >= sx1 { sx1 = sx0 + 1 }
+```
+
+This prevents out-of-bounds source reads when `(dy+1)*sh/nh` exceeds `sh` and degenerate zero-width source regions when `sx0 >= sx1` (which can occur near image boundaries with certain downscale ratios).
+
+**Impact:** Correctness fix — prevents potential out-of-bounds reads and zero-area source sampling bugs that would produce incorrect values or UB for edge-case downscale dimensions.
+
+**Verification:** `odin build src/ -out:badodin -o:speed -disable-assert` passes. Changes are bit-identical to the C reference behavior.
+
+### 21. Grayscale-to-BGR Replication in img_compute_feature for color=1 Mode (imgops.odin)
+
+Date: 2026-07-29
+File: src/imgops.odin
+
+Before: When `img_compute_feature` was called with `color=1` (BGR color features) and the input crop was already grayscale (`channels==1`), the Odin code passed the 1-channel source directly to `img_resize_area` with a 1-channel destination buffer, then iterated the output loop with `channels=1`. The C reference (BadApplestein `src/imgops.c` lines 330-340) replicates the single grayscale channel to all three BGR channels before resizing, producing correct 3-channel color output.
+
+After: Added a dedicated branch matching the C reference's `else if (color && crop->channels == 1)` path. When `color == 1 && crop.channels == 1`, the grayscale input is replicated to a 3-channel BGR work buffer (each pixel written to B, G, R offsets) before calling `img_resize_area`. The `channels` variable is also set to 3 so the output loop correctly emits 3 channels per pixel.
+
+**Impact:** Correctness fix — previously, `color=1` with grayscale input produced only 1 channel of output (missing G and R), making color feature extraction silently incorrect for grayscale inputs.
+
+**Verification:** `odin build src/ -out:badodin -o:speed -disable-assert` passes. Behavior now matches the C reference exactly.
+
+---
+
 ### Performance Summary
 
 All optimizations combined bring BadOdinStein to the following performance vs the C reference BadApplestein:

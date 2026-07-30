@@ -31,8 +31,8 @@ g_cli: CLI_Ctx
 // ── Option store (flat key=value pairs) ──
 OPT_MAX :: 128
 Opt_Entry :: struct {
-    name:  string,
-    value: string,
+	name:  string,
+	value: string,
 }
 g_opts:  [OPT_MAX]Opt_Entry
 g_nopts: int
@@ -97,11 +97,11 @@ cli_opt_int :: proc(name: string, def: int) -> int {
 	}
 	// Fall through: return cached value or default
 	switch name {
-	case "threads":  if g_cli._threads_valid { return g_cli._threads }
-	case "width":    if g_cli._width_valid { return g_cli._width }
-	case "height":   if g_cli._height_valid { return g_cli._height }
-	case "max-frames": if g_cli._max_frames_valid { return g_cli._max_frames }
-	case "channels": if g_cli._channels_valid { return g_cli._channels }
+		case "threads":  if g_cli._threads_valid { return g_cli._threads }
+		case "width":    if g_cli._width_valid { return g_cli._width }
+		case "height":   if g_cli._height_valid { return g_cli._height }
+		case "max-frames": if g_cli._max_frames_valid { return g_cli._max_frames }
+		case "channels": if g_cli._channels_valid { return g_cli._channels }
 	}
 	return def
 }
@@ -145,6 +145,12 @@ cli_parse :: proc(args: []string) {
 			g_cli.quiet = true
 		case arg == "--json":
 			g_cli.json_mode = true
+		case arg == "--no-edges":
+			cli_store("no-edges", "1")
+		case arg == "--multi-scale":
+			cli_store("multi-scale", "1")
+		case arg == "--keep-manifests":
+			cli_store("keep-manifests", "1")
 		case strings.has_prefix(arg, "--threads="):
 			v := strings.trim_prefix(arg, "--threads=")
 			cli_store("threads", v)

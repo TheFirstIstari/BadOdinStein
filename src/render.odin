@@ -618,6 +618,27 @@ render_main :: proc() {
     } else if preset == "720p" {
         width = 1280; height = 720; fps_val = 30.0
     }
+
+    // Render codec/pixel-format selection: supports --codec, --pix-fmt, --no-hw
+    codec_name := cli_opt_str("codec", "prores_ks")
+    pix_fmt_cli := cli_opt_str("pix-fmt", "")
+    no_hw := cli_has("no-hw")
+
+    // When --no-hw is set, force software ProRes regardless of --codec
+    if no_hw {
+        codec_name = "prores_ks"
+        pix_fmt_cli = "yuv422p10le"
+    } else {
+        // Try hardware encoder auto-detection (matches C reference behaviour).
+        hw_codec := probe_hw_encoder()
+        if len(hw_codec) > 0 && channels == 3 {
+            codec_name = hw_codec
+            pix_fmt_cli = "yuv420p"
+        }
+    }
+    if channels != 3 && len(pix_fmt_cli) == 0 {
+        pix_fmt_cli = "gray"
+    }
     
     cli_info("system: %d cores | %d MB RAM | %d threads",
              sys.cpu_cores, sys.total_memory_bytes / (1024 * 1024), sys.num_threads)
@@ -659,12 +680,31 @@ render_main :: proc() {
 
     sort.quick_sort_proc(manifest_paths[:], cmp_manifest)
     
-    // Auto-detect dimensions from first manifest header (src_w/src_h at bytes 0-7)
-    if width <= 0 && height <= 0 {
+    // Auto-detect dimensions from first manifest header (src_w/src_h at bytes 0-7).
+    // Matches the C reference: read src_w/src_h from manifest header, then compute
+    // missing dimension(s) preserving the source aspect ratio. If neither is specified,
+    // use source dimensions directly.
+    if width <= 0 || height <= 0 {
         data, data_err := os.read_entire_file_from_path(manifest_paths[0], context.allocator)
         if data_err == nil && len(data) >= 8 {
-            width = int((^u32)(&data[0])^)
-            height = int((^u32)(&data[4])^)
+            src_w := int((^u32)(&data[0])^)
+            src_h := int((^u32)(&data[4])^)
+            if src_w > 0 && src_h > 0 {
+                src_aspect := f64(src_w) / f64(src_h)
+                if width <= 0 && height <= 0 {
+                    // Neither specified: use source dimensions directly
+                    width = src_w
+                    height = src_h
+                } else if width > 0 && height <= 0 {
+                    // Width only: compute height from aspect ratio, round to even
+                    height = int(f64(width) / src_aspect + 0.5)
+                    height = (height / 2) * 2
+                } else if height > 0 && width <= 0 {
+                    // Height only: compute width from aspect ratio, round to even
+                    width = int(f64(height) * src_aspect + 0.5)
+                    width = (width / 2) * 2
+                }
+            }
         }
         if data_err == nil { delete(data) }
     }
@@ -753,7 +793,7 @@ render_main :: proc() {
     if max_frames > 0 && max_frames < max_frames_actual { max_frames_actual = max_frames }
     
     // Open video encoder
-    enc := video_encoder_open(output, width, height, int(fps_val), "prores_ks", 0)
+    enc := video_encoder_open(output, width, height, int(fps_val), codec_name, 0, pix_fmt_cli)
     if enc == nil { cli_die("cannot open encoder: %s", output) }
     defer video_encoder_close(enc)
 
@@ -883,4 +923,19 @@ render_main :: proc() {
     elapsed := time.duration_seconds(time.tick_since(start))
     fps_out := f64(frames_done) / max(elapsed, 0.001)
     cli_progress_done(fmt.tprintf("render complete in %.2fs | %.2f fps | %d frames", elapsed, fps_out, frames_done))
+
+    // Clean up manifest files unless --keep-manifests
+    if cli_has("keep-manifests") {
+        cli_info("keeping manifests: %s", man_dir)
+    } else {
+        // Remove per-frame manifest .bin files (skip fps.bin which is a sidecar).
+        for path in manifest_paths {
+            name := strings.last_index_byte(path, '/')
+            fname := path
+            if name >= 0 { fname = path[name + 1:] }
+            if fname == "fps.bin" { continue }
+            os.remove(path)
+        }
+        cli_info("removed %d manifest files from %s", len(manifest_paths), man_dir)
+    }
 }
