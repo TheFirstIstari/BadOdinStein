@@ -605,23 +605,24 @@ render_main :: proc() {
     
     // System detect
     sys := system_detect()
-    if g_cli.threads > 0 { sys.num_threads = g_cli.threads }
+    if g_cli.threads > 0 { sys.num_threads = g_cli.threads } else { sys.num_threads = sys.cpu_cores }
     
-    // Apply preset
+    // Apply preset: mirrors the C reference (main.c preset_width) — a preset
+    // sets the output width only; height and fps are derived from the source later.
     preset := cli_opt_str("preset", "")
     if preset == "8k" {
-        width = 7680; height = 4320; fps_val = 60.0
+        width = 7680
     } else if preset == "4k" {
-        width = 3840; height = 2160; fps_val = 60.0
+        width = 3840
     } else if preset == "1080p" {
-        width = 1920; height = 1080; fps_val = 30.0
+        width = 1920
     } else if preset == "720p" {
-        width = 1280; height = 720; fps_val = 30.0
+        width = 1280
     }
 
     // Render codec/pixel-format selection: supports --codec, --pix-fmt, --no-hw
     codec_name := cli_opt_str("codec", "prores_ks")
-    pix_fmt_cli := cli_opt_str("pix-fmt", "")
+    pix_fmt_cli := cli_opt_str("pix-fmt", "yuv422p10le")
     no_hw := cli_has("no-hw")
 
     // When --no-hw is set, force software ProRes regardless of --codec
@@ -631,13 +632,10 @@ render_main :: proc() {
     } else {
         // Try hardware encoder auto-detection (matches C reference behaviour).
         hw_codec := probe_hw_encoder()
-        if len(hw_codec) > 0 && channels == 3 {
+        if len(hw_codec) > 0 {
             codec_name = hw_codec
             pix_fmt_cli = "yuv420p"
         }
-    }
-    if channels != 3 && len(pix_fmt_cli) == 0 {
-        pix_fmt_cli = "gray"
     }
     
     cli_info("system: %d cores | %d MB RAM | %d threads",
@@ -683,31 +681,42 @@ render_main :: proc() {
     // Auto-detect dimensions from first manifest header (src_w/src_h at bytes 0-7).
     // Matches the C reference: read src_w/src_h from manifest header, then compute
     // missing dimension(s) preserving the source aspect ratio. If neither is specified,
-    // use source dimensions directly.
-    if width <= 0 || height <= 0 {
-        data, data_err := os.read_entire_file_from_path(manifest_paths[0], context.allocator)
-        if data_err == nil && len(data) >= 8 {
-            src_w := int((^u32)(&data[0])^)
-            src_h := int((^u32)(&data[4])^)
-            if src_w > 0 && src_h > 0 {
-                src_aspect := f64(src_w) / f64(src_h)
-                if width <= 0 && height <= 0 {
-                    // Neither specified: use source dimensions directly
-                    width = src_w
-                    height = src_h
-                } else if width > 0 && height <= 0 {
-                    // Width only: compute height from aspect ratio, round to even
-                    height = int(f64(width) / src_aspect + 0.5)
-                    height = (height / 2) * 2
-                } else if height > 0 && width <= 0 {
-                    // Height only: compute width from aspect ratio, round to even
+    // use source dimensions directly. If both are specified, fit within the bounding
+    // box preserving the source aspect ratio (shrink the overflowing dimension).
+    data, data_err := os.read_entire_file_from_path(manifest_paths[0], context.allocator)
+    if data_err == nil && len(data) >= 8 {
+        src_w := int((^u32)(&data[0])^)
+        src_h := int((^u32)(&data[4])^)
+        if src_w > 0 && src_h > 0 {
+            src_aspect := f64(src_w) / f64(src_h)
+            if width <= 0 && height <= 0 {
+                // Neither specified: use source dimensions directly
+                width = src_w
+                height = src_h
+            } else if width > 0 && height <= 0 {
+                // Width only: compute height from aspect ratio, round to even
+                height = int(f64(width) / src_aspect + 0.5)
+                height = (height / 2) * 2
+            } else if height > 0 && width <= 0 {
+                // Height only: compute width from aspect ratio, round to even
+                width = int(f64(height) * src_aspect + 0.5)
+                width = (width / 2) * 2
+            } else {
+                // Both specified: fit within bounding box preserving aspect.
+                dst_aspect := f64(width) / f64(height)
+                if dst_aspect > src_aspect {
+                    // Output is wider than source → shrink width
                     width = int(f64(height) * src_aspect + 0.5)
                     width = (width / 2) * 2
+                } else {
+                    // Output is taller than source → shrink height
+                    height = int(f64(width) / src_aspect + 0.5)
+                    height = (height / 2) * 2
                 }
             }
         }
-        if data_err == nil { delete(data) }
     }
+    if data_err == nil { delete(data) }
     if width <= 0 { width = 7680 }
     if height <= 0 { height = 4320 }
     
