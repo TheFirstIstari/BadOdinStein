@@ -718,6 +718,9 @@ solve_full :: proc(s: ^Arrange_State, gray, color_pixels: []u8, color_stride, co
 				t.match += time.duration_seconds(time.tick_since(tm))
 				t.tiles += nt
 			}
+			delete(dedup_map)
+			delete(feat_hashes)
+			delete(uniq_hashes)
 		}
 	}
 
